@@ -1,0 +1,213 @@
+{
+  "main": {
+    "id": "4109ad0e15ee305f",
+    "type": "split",
+    "children": [
+      {
+        "id": "db95b3f438925cf0",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "2d426b40c471992b",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "eth/02-交易机制.md",
+                "mode": "preview",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "02-交易机制"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "597de0e6bcd4df75",
+    "type": "split",
+    "children": [
+      {
+        "id": "0c86c1a82ad001eb",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "50ba1c9d3c05d916",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "文件列表"
+            }
+          },
+          {
+            "id": "9f76da90b3080095",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "搜索"
+            }
+          },
+          {
+            "id": "16ee1c096611708c",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "书签"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 207.5
+  },
+  "right": {
+    "id": "6a91dcc7545c6cfe",
+    "type": "split",
+    "children": [
+      {
+        "id": "96411427e03362c9",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "a4227ada463c4828",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "eth/06-钱包工程实践/充值系统/跨链桥充值识别.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "跨链桥充值识别 的反向链接列表"
+            }
+          },
+          {
+            "id": "40a584f41afb23dd",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "欢迎.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "欢迎 的出链列表"
+            }
+          },
+          {
+            "id": "6d7263f56ce09bec",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "标签"
+            }
+          },
+          {
+            "id": "9eb0cc88a494fd9f",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "添加笔记属性"
+            }
+          },
+          {
+            "id": "3b559b2f515a6788",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "欢迎.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "欢迎 的大纲"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:打开快速切换": false,
+      "graph:查看关系图谱": false,
+      "canvas:新建白板": false,
+      "daily-notes:打开/创建今天的日记": false,
+      "templates:插入模板": false,
+      "command-palette:打开命令面板": false,
+      "bases:新建数据库": false
+    }
+  },
+  "active": "2d426b40c471992b",
+  "lastOpenFiles": [
+    "eth/01-以太坊基础.md",
+    "eth/00 大纲.md",
+    "eth/06-钱包工程实践/充值系统/跨链桥充值识别.md",
+    "eth/05-钱包系统/私钥存储/KMS.md",
+    "eth/06-钱包工程实践/充值系统",
+    "eth/06-钱包工程实践",
+    "eth/05-钱包系统/私钥存储/私钥存储方案概览.md",
+    "eth/05-钱包系统架构.md.tmp.47688.1773817615752",
+    "eth/05-钱包系统/私钥存储/私钥存储方案概览.md.tmp.47688.1773817600050",
+    "eth/06-钱包工程实践.md",
+    "eth/03-PoS共识.md",
+    "eth/02-交易机制.md",
+    "eth/04-BLS聚合签名.md",
+    "eth/05-钱包系统架构.md",
+    "eth/02-eth-transaction.md.md",
+    "eth/03-eth-pos.md.md",
+    "eth/04-bls-signature.md.md",
+    "eth/05-wallet-architecture.md.md",
+    "eth/06-wallet-engineering.md（最重要）.md",
+    "eth/01-eth-basics.md.md",
+    "eth/03-eth-pos.md.md.tmp.46076.1773804474952",
+    "未命名.base",
+    "未命名.canvas",
+    "eth"
+  ]
+}
