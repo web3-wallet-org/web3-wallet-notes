@@ -14,13 +14,15 @@
 ## 目录结构
 
 ```text
-web3-learning/
+web3-wallet/
 ├─ README.md
+├─ .gitignore
 ├─ docs/
+│  ├─ .obsidian/
 │  ├─ 学习笔记.md
-│  └─ Web3基础.md
+│  ├─ Web3基础.md
+│  └─ eth/
 ├─ src/
 │  ├─ contracts/
 │  └─ scripts/
-└─ .gitignore
 ```
