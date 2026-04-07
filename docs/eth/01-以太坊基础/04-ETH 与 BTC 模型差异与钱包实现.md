@@ -1,4 +1,27 @@
-# 04 ETH 与 BTC 模型差异与钱包实现
+﻿# 04 ETH 与 BTC 模型差异与钱包实现
+
+## 总览图
+```mermaid
+flowchart TD
+    subgraph BTC[BTC: UTXO 模型]
+        B1[输入: 花费旧UTXO]
+        B2[输出: 新UTXO]
+        B3[余额=UTXO集合求和]
+        B4[重点: 选币/找零/费率sat-vB]
+        B1 --> B2 --> B3 --> B4
+    end
+
+    subgraph ETH[ETH: Account 模型]
+        E1[输入: 账户交易]
+        E2[执行: EVM状态迁移]
+        E3[余额=账户字段]
+        E4[重点: nonce/gas/receipt/logs]
+        E1 --> E2 --> E3 --> E4
+    end
+
+    BTC --- W1[钱包工程关注点差异]
+    ETH --- W1
+```
 
 ## 1. 先看结论
 - BTC：UTXO 模型，交易是“花费旧输出，创建新输出”
@@ -92,4 +115,3 @@ ETH 钱包必须处理：
 - 清楚解释 BTC 与 ETH 钱包为何设计不同
 - 识别 Account 模型下的工程核心难点（nonce、gas、执行结果）
 - 制定一条面向生产的钱包能力建设路线
-

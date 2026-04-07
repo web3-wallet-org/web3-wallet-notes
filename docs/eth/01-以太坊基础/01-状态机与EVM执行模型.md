@@ -1,4 +1,30 @@
-# 01 状态机与 EVM 执行模型
+﻿# 01 状态机与 EVM 执行模型
+
+## 总览图
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant W as 钱包客户端
+    participant S as 签名模块
+    participant R as RPC节点
+    participant M as Mempool
+    participant B as 区块打包者
+    participant E as EVM执行
+    participant C as 回执/确认监听
+
+    U->>W: 发起转账/合约调用
+    W->>W: 构造交易参数\n(to,value,data,nonce,gas,chainId)
+    W->>S: 请求签名
+    S-->>W: 返回 signedTx
+    W->>R: eth_sendRawTransaction(signedTx)
+    R->>M: 进入待打包池
+    B->>M: 挑选交易
+    B->>E: 区块内执行交易
+    E-->>R: 生成 receipt/logs/status
+    R-->>C: 查询到交易回执
+    C-->>W: pending -> confirmed/failed
+    W-->>U: 展示最终状态与手续费
+```
 
 ## 1. 先建立一个“系统级”心智模型
 以太坊可以看成一台全球共享的状态机：
@@ -87,4 +113,3 @@ EVM 是一个按 opcode 计费的执行环境：
 - 能完整描述“一笔交易如何让状态变化”
 - 能解释 `status=0` 与 `status=1` 的业务差异
 - 能在钱包代码中实现交易状态追踪与失败分类
-
