@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "eth/02-交易机制.md",
+                "file": "eth/01-以太坊基础/02-账户模型与账户结构.md",
                 "mode": "preview",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "02-交易机制"
+              "title": "02-账户模型与账户结构"
             }
           }
         ]
@@ -185,8 +185,16 @@
   },
   "active": "2d426b40c471992b",
   "lastOpenFiles": [
+    "eth/01-以太坊基础/01-状态机与EVM执行模型.md",
+    "eth/01-以太坊基础/03-密钥、地址与签名.md",
+    "eth/01-以太坊基础/04-ETH 与 BTC 模型差异与钱包实现.md",
+    "eth/01-以太坊基础/02-账户模型与账户结构.md",
+    "eth/03-PoS共识.md",
+    "eth/02-交易机制.md",
     "eth/01-以太坊基础.md",
     "eth/00 大纲.md",
+    "学习笔记.md",
+    "Web3基础.md",
     "eth/06-钱包工程实践/充值系统/跨链桥充值识别.md",
     "eth/05-钱包系统/私钥存储/KMS.md",
     "eth/06-钱包工程实践/充值系统",
@@ -195,8 +203,6 @@
     "eth/05-钱包系统架构.md.tmp.47688.1773817615752",
     "eth/05-钱包系统/私钥存储/私钥存储方案概览.md.tmp.47688.1773817600050",
     "eth/06-钱包工程实践.md",
-    "eth/03-PoS共识.md",
-    "eth/02-交易机制.md",
     "eth/04-BLS聚合签名.md",
     "eth/05-钱包系统架构.md",
     "eth/02-eth-transaction.md.md",
