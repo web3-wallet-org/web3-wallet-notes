@@ -27,25 +27,36 @@
 <a id="sec-1"></a>
 ## 总览图
 ```mermaid
-flowchart TD
+flowchart LR
+
     subgraph BTC[BTC: UTXO 模型]
-        B1[输入: 花费旧UTXO]
-        B2[输出: 新UTXO]
-        B3[余额=UTXO集合求和]
-        B4[重点: 选币/找零/费率sat-vB]
-        B1 --> B2 --> B3 --> B4
+        direction TB
+        B0[输入: 花费旧 UTXO]
+        B1[输出: 新 UTXO]
+        B2[余额: UTXO 集合求和]
+        B3[重点: 选币 / 找零 / 费率 sat-vB]
+        B0 --> B1 --> B2 --> B3
     end
 
     subgraph ETH[ETH: Account 模型]
-        E1[输入: 账户交易]
-        E2[执行: EVM状态迁移]
-        E3[余额=账户字段]
-        E4[重点: nonce/gas/receipt/logs]
-        E1 --> E2 --> E3 --> E4
+        direction TB
+        E0[输入: 账户交易]
+        E1[执行: EVM 状态迁移]
+        E2[余额: 账户字段]
+        E3[重点: nonce / gas / receipt / logs]
+        E0 --> E1 --> E2 --> E3
     end
 
-    BTC --- W1[钱包工程关注点差异]
-    ETH --- W1
+    B3 --> C[钱包工程关注点差异]
+    E3 --> C
+
+    classDef title fill:#e8f0ff,stroke:#5b8def,color:#111;
+    classDef btc fill:#fff7e6,stroke:#f0a202,color:#111;
+    classDef eth fill:#e8fff1,stroke:#20a464,color:#111;
+
+    class C title;
+    class B0,B1,B2,B3 btc;
+    class E0,E1,E2,E3 eth;
 ```
 
 <a id="sec-2"></a>
