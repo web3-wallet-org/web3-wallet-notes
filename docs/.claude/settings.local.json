@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:learnblockchain.cn)",
+      "WebFetch(domain:mp.weixin.qq.com)"
+    ]
+  }
+}
