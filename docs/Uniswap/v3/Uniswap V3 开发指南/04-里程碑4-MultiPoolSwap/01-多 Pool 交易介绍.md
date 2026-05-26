@@ -35,7 +35,7 @@ WETH -> USDC -> USDT -> WBTC
 这一章要变成：
 
 ```text
-用户 -> Pool A -> Pool B -> Pool C -> 最终输出 token
+用户 -> Manager/Router -> Pool A -> Pool B -> Pool C -> 最终输出 token
 ```
 
 每个 Pool 只负责自己那一小段兑换。上一段 Pool 的输出，会变成下一段 Pool 的输入。
@@ -70,12 +70,14 @@ USDT/WBTC
 
 主要有几块：
 
-1. `Factory`：统一创建和登记 Pool。
-2. `Path`：把多段交易路线编码成一个字节路径。
+1. 前端 Router：帮用户找到两个 token 之间能走的路径。
+2. `Quoter`：按路径一段一段模拟报价。
 3. `Manager`：按路径一段一段执行 swap。
-4. `Quoter`：按路径一段一段模拟报价。
-5. 前端 Router：帮用户找到两个 token 之间能走的路径。
+4. `Path`：把多段交易路线编码成一个字节路径。
+5. `Factory`：统一创建、登记和查找 Pool。
 6. `tickSpacing`：让不同 Pool 可以使用不同的 tick 间距。
+
+这里可以先粗略记住：前端 `Router` 负责找路，`Quoter` 负责报价，`Manager` 负责真正执行；再往下才是 `Path`、`Factory`、`tickSpacing` 这些底层组织能力。
 
 ## 人话版理解
 
@@ -126,6 +128,7 @@ Path 负责描述路线
 ## 你要记住
 
 - 多 Pool 交易的本质是：上一池输出，下一池输入。
+- 中间 token 通常不会先回到用户钱包，而是在同一笔交易里继续作为下一池的输入。
 - 用户看到的是一次 swap，底层可能执行了多次 swap。
 - Pool 不负责找路，也不负责理解整条路径。
 - `Factory` 让 Pool 可以被统一创建、登记和计算地址。
