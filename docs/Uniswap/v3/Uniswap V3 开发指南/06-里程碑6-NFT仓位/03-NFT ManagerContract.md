@@ -6,9 +6,7 @@
 
 核心一句话：
 
-```text
-用户不再用 owner + tick 范围直接管理仓位，而是用 NFT tokenId 管理仓位。
-```
+用户不再用 `owner + tick 范围` 直接管理仓位，而是 <span style="color: red;">用 NFT tokenId 管理仓位</span>。
 
 这就是 Uniswap V3 用户体验真正变顺的地方。
 
@@ -74,6 +72,10 @@ Position 是仓位数据。
 Pool 里仍然保存底层流动性状态。
 ```
 
+后面的操作里，除了 `mint` 是创建新仓位，其他针对已有 `tokenId` 的操作都要先检查权限。
+
+因为 NFT 代表仓位所有权，所以不是谁拿到一个 `tokenId`，谁就能随便操作它。
+
 ## mint 做了什么
 
 用户添加流动性时，现在不只是调用 Pool `mint`。
@@ -116,6 +118,14 @@ Manager 会：
 
 减少流动性对应 Pool 的 `burn`。
 
+也就是上一章讲过的那件事：
+
+```text
+Pool.burn = 减少流动性并结算 amount0 / amount1
+```
+
+只不过现在前端不再手动传一堆仓位参数，而是先通过 `tokenId` 找到对应 Position。
+
 流程是：
 
 ```text
@@ -129,13 +139,17 @@ Manager 会：
 
 注意，减少流动性和真正把 token 转给用户，仍然是两个概念。
 
-`decreaseLiquidity` 更像结算。
+`decreaseLiquidity` 更像 <span style="color: red;">结算</span>。
 
-`collect` 才是提款。
+`collect` 才是 <span style="color: red;">提款</span>。
 
 ## collect 做什么
 
 `collect(tokenId, recipient, amount0Max, amount1Max)` 用来把仓位里可领取的 token 转走。
+
+它对应的是底层 Pool 的 `collect`：
+
+Pool.collect = <span style="color: red;">把已经结算出来的 token 真正转出去</span>。
 
 它会：
 
@@ -148,9 +162,28 @@ Manager 会：
 
 费用和移除流动性释放出来的 token，都可能通过 collect 取走。
 
-## burn NFT 做什么
+## burn NFT 不是移除流动性
 
 当一个仓位已经没有流动性，也没有可领取 token 时，用户可以 burn 掉 NFT。
+
+这里的 burn 是 ERC721 的 burn，意思是销毁这个仓位凭证。
+
+它和 Pool 的 `burn` 不是一回事：
+
+```text
+Pool.burn = 减少流动性
+NFT burn  = 销毁 tokenId
+```
+
+正常顺序应该是：
+
+```text
+1. decreaseLiquidity 把流动性降下来
+2. collect 把可领取的 token0 / token1 全部取走
+3. burn NFT 销毁空仓位凭证
+```
+
+如果 `collect` 之后还有 token 没取完，就不能 burn NFT。
 
 要求通常是：
 
@@ -161,6 +194,10 @@ tokensOwed1 = 0
 ```
 
 这样可以防止用户烧掉一个还带资产的仓位。
+
+一句话：
+
+NFT burn <span style="color: red;">只销毁仓位凭证，不负责提款</span>。
 
 NFT 被 burn 后，`tokenId` 不再代表有效仓位。
 

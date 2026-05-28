@@ -38,6 +38,23 @@ upperTick
 
 这些都可以展示在 NFT 图片和 attributes 里。
 
+## tokenURI 在哪里实现
+
+通常 `tokenURI` 会在 NFT Manager 里暴露，因为 Manager 是 ERC721 合约。
+
+但 Manager 不一定自己拼 SVG。
+
+更干净的方式是：
+
+```text
+Manager 读取仓位数据
+Manager 把数据传给 Renderer
+Renderer 返回 metadata
+Manager 把 tokenURI 返回给外部
+```
+
+这样业务逻辑和展示逻辑分开。
+
 ## metadata 长什么样
 
 NFT metadata 通常是 JSON：
@@ -56,6 +73,8 @@ NFT metadata 通常是 JSON：
 这样整个 NFT 展示数据可以完全链上生成，不依赖外部服务器。
 
 ## 为什么要 base64
+
+base64 的目的，是把 JSON 和 SVG 包成一段安全的字符串，方便 `tokenURI` 返回。
 
 `tokenURI` 返回的是字符串。
 
@@ -101,23 +120,6 @@ currentTick
 ```text
 让仓位 NFT 不只是一个编号，而是能被人看懂。
 ```
-
-## tokenURI 在哪里实现
-
-通常 `tokenURI` 会在 NFT Manager 里暴露，因为 Manager 是 ERC721 合约。
-
-但 Manager 不一定自己拼 SVG。
-
-更干净的方式是：
-
-```text
-Manager 读取仓位数据
-Manager 把数据传给 Renderer
-Renderer 返回 metadata
-Manager 把 tokenURI 返回给外部
-```
-
-这样业务逻辑和展示逻辑分开。
 
 ## 为什么渲染器不应该影响核心逻辑
 
