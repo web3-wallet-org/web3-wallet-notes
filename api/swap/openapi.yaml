@@ -1,0 +1,476 @@
+openapi: 3.0.3
+info:
+  title: Web3 Wallet Swap API
+  version: 0.1.0
+  description: Phase 1 EVM 同链 Swap API。当前覆盖 quote、allowance、approve、execute、submit-hash 和 status。
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: Swap
+    description: EVM 同链 Swap 接口
+  - name: System
+    description: 服务健康检查
+
+paths:
+  /healthz:
+    get:
+      tags: [System]
+      summary: 健康检查
+      responses:
+        "200":
+          description: 服务正常
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /swap/quote:
+    post:
+      tags: [Swap]
+      summary: 获取 Swap 报价
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/QuoteRequest"
+      responses:
+        "200":
+          description: 报价成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuoteResponse"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /swap/allowance:
+    post:
+      tags: [Swap]
+      summary: 检查授权额度
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/QuoteWalletRequest"
+      responses:
+        "200":
+          description: 授权检查成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AllowanceResponse"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /swap/approve-tx:
+    post:
+      tags: [Swap]
+      summary: 构造 approve 交易
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/QuoteWalletRequest"
+      responses:
+        "200":
+          description: approve 交易构造成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvmTxEnvelope"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /swap/execute:
+    post:
+      tags: [Swap]
+      summary: 构造 swap 交易并创建订单
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecuteRequest"
+      responses:
+        "200":
+          description: swap 交易构造成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecuteResponse"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /swap/submit-hash:
+    post:
+      tags: [Swap]
+      summary: 外部钱包提交交易哈希
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubmitHashRequest"
+      responses:
+        "200":
+          description: 提交成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+        default:
+          $ref: "#/components/responses/Error"
+
+  /swap/status/{orderId}:
+    get:
+      tags: [Swap]
+      summary: 查询订单状态
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 018f6a9a-4266-4a5d-a990-3d6a02adbe4c
+      responses:
+        "200":
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+        default:
+          $ref: "#/components/responses/Error"
+
+components:
+  responses:
+    Error:
+      description: 错误响应
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/APIError"
+
+  schemas:
+    QuoteRequest:
+      type: object
+      required:
+        - userId
+        - chainId
+        - fromToken
+        - toToken
+        - amountIn
+        - slippageBps
+        - walletAddress
+      properties:
+        userId:
+          type: string
+          example: "123"
+        chainId:
+          type: integer
+          format: int64
+          example: 1
+        fromToken:
+          type: string
+          example: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+        toToken:
+          type: string
+          example: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+        amountIn:
+          type: string
+          description: token 原始精度整数
+          example: "100000000"
+        slippageBps:
+          type: integer
+          format: int64
+          description: 滑点，单位 bps。50 表示 0.5%。
+          example: 50
+        walletAddress:
+          type: string
+          example: "0x1111111111111111111111111111111111111111"
+
+    QuoteWalletRequest:
+      type: object
+      required:
+        - quoteId
+        - walletAddress
+      properties:
+        quoteId:
+          type: string
+          example: 018f6a9a-4266-4a5d-a990-3d6a02adbe4c
+        walletAddress:
+          type: string
+          example: "0x1111111111111111111111111111111111111111"
+
+    ExecuteRequest:
+      type: object
+      required:
+        - quoteId
+        - walletAddress
+        - walletType
+      properties:
+        quoteId:
+          type: string
+          example: 018f6a9a-4266-4a5d-a990-3d6a02adbe4c
+        walletAddress:
+          type: string
+          example: "0x1111111111111111111111111111111111111111"
+        walletType:
+          $ref: "#/components/schemas/WalletType"
+
+    SubmitHashRequest:
+      type: object
+      required:
+        - orderId
+        - txHash
+      properties:
+        orderId:
+          type: string
+          example: 018f6a9a-4266-4a5d-a990-3d6a02adbe4c
+        txHash:
+          type: string
+          example: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+
+    QuoteResponse:
+      type: object
+      properties:
+        quoteId:
+          type: string
+          example: 018f6a9a-4266-4a5d-a990-3d6a02adbe4c
+        expiresAt:
+          type: integer
+          format: int64
+          description: Unix milliseconds
+          example: 1730000000000
+        deadline:
+          type: integer
+          format: int64
+          nullable: true
+          description: Unix seconds
+          example: 1730001200
+        selectedProvider:
+          type: string
+          example: 1inch
+        fromToken:
+          $ref: "#/components/schemas/TokenInfo"
+        toToken:
+          $ref: "#/components/schemas/TokenInfo"
+        amountOut:
+          type: string
+          example: "123456789"
+        minAmountOut:
+          type: string
+          example: "122839505"
+        gasUsd:
+          type: string
+          example: "2.13"
+        feeUsd:
+          type: string
+          example: "0.00"
+        priceImpactBps:
+          type: integer
+          format: int64
+          example: 12
+        route:
+          type: array
+          items:
+            $ref: "#/components/schemas/RouteStep"
+
+    AllowanceResponse:
+      type: object
+      properties:
+        allowanceEnough:
+          type: boolean
+          example: false
+        spender:
+          type: string
+          example: "0x2222222222222222222222222222222222222222"
+        requiredAmount:
+          type: string
+          example: "100000000"
+        currentAllowance:
+          type: string
+          example: "0"
+
+    ExecuteResponse:
+      type: object
+      properties:
+        orderId:
+          type: string
+          example: 018f6a9a-4266-4a5d-a990-3d6a02adbe4c
+        gasType:
+          $ref: "#/components/schemas/GasType"
+        transaction:
+          $ref: "#/components/schemas/EvmTxEnvelope"
+
+    StatusResponse:
+      type: object
+      properties:
+        orderId:
+          type: string
+          example: 018f6a9a-4266-4a5d-a990-3d6a02adbe4c
+        status:
+          $ref: "#/components/schemas/OrderStatus"
+        txHash:
+          type: string
+          example: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+        actualOut:
+          type: string
+          example: "123456789"
+        errorMessage:
+          type: string
+          nullable: true
+          example: null
+        nextAction:
+          type: string
+          nullable: true
+          enum: [wait, submit_hash, retry_quote, manual_review]
+          example: wait
+        retryable:
+          type: boolean
+          example: false
+        expiresAt:
+          type: integer
+          format: int64
+          nullable: true
+          example: null
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/SwapEvent"
+
+    EvmTxEnvelope:
+      type: object
+      properties:
+        gasType:
+          $ref: "#/components/schemas/GasType"
+        chainId:
+          type: integer
+          format: int64
+          example: 1
+        to:
+          type: string
+          example: "0x3333333333333333333333333333333333333333"
+        data:
+          type: string
+          example: "0xabcdef"
+        value:
+          type: string
+          example: "0"
+        gasLimit:
+          type: string
+          example: "185000"
+        gasPrice:
+          type: string
+          example: "5000000000"
+        maxFeePerGas:
+          type: string
+          example: "15000000000"
+        maxPriorityFeePerGas:
+          type: string
+          example: "1000000000"
+
+    TokenInfo:
+      type: object
+      properties:
+        address:
+          type: string
+          example: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+        symbol:
+          type: string
+          example: USDC
+        decimals:
+          type: integer
+          example: 6
+
+    RouteStep:
+      type: object
+      properties:
+        protocol:
+          type: string
+          example: uniswap_v3
+        fromToken:
+          $ref: "#/components/schemas/TokenInfo"
+        toToken:
+          $ref: "#/components/schemas/TokenInfo"
+        amountIn:
+          type: string
+          example: "100000000"
+        amountOut:
+          type: string
+          example: "123456789"
+        poolAddress:
+          type: string
+          example: "0x4444444444444444444444444444444444444444"
+
+    SwapEvent:
+      type: object
+      properties:
+        orderId:
+          type: string
+          example: 018f6a9a-4266-4a5d-a990-3d6a02adbe4c
+        status:
+          $ref: "#/components/schemas/OrderStatus"
+        message:
+          type: string
+          example: order created
+        at:
+          type: string
+          format: date-time
+
+    APIError:
+      type: object
+      properties:
+        code:
+          type: string
+          example: INVALID_ARGUMENT
+        message:
+          type: string
+          example: "invalid argument: amountIn must be unsigned decimal string"
+
+    WalletType:
+      type: string
+      enum:
+        - external
+        - custody
+        - mpc
+      example: external
+
+    GasType:
+      type: string
+      enum:
+        - eip1559
+        - legacy
+      example: eip1559
+
+    OrderStatus:
+      type: string
+      enum:
+        - SIGNING
+        - BROADCASTING
+        - TX_HASH_RECEIVED
+        - TX_PENDING
+        - SUSPICIOUS
+        - MANUAL_REVIEW
+        - TX_FAILED
+        - TX_CONFIRMED
+        - COMPLETED
+        - USER_REJECTED
+        - SIGNING_TIMEOUT
+        - BROADCAST_FAILED
+        - AWAITING_TX_HASH_TIMEOUT
+      example: TX_PENDING

@@ -3,7 +3,7 @@
 这是一个用于学习 Web3 的仓库，包含两部分：
 
 - `docs/`：学习文档与笔记
-- `src/`：代码实践（合约与脚本）
+- `src/`：代码实践，按主题拆分，例如 `eth/` 和 `swap/`
 
 ## 学习节奏建议
 
@@ -23,6 +23,10 @@ web3-wallet/
 │  ├─ Web3基础.md
 │  └─ eth/
 ├─ src/
-│  ├─ contracts/
-│  └─ scripts/
+│  ├─ eth/
+│  ├─ swap/
+│  │  ├─ cmd/
+│  │  └─ internal/
+│  ├─ contracts/  # 旧实践目录，暂时保留
+│  └─ scripts/    # 旧实践目录，暂时保留
 ```
