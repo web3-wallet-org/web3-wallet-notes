@@ -3,6 +3,7 @@ package swap
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -130,9 +131,11 @@ func (s *Service) Quote(ctx context.Context, input QuoteInput) (QuoteResponse, e
 		}
 		quote, err := provider.GetQuote(input)
 		if err != nil {
+			log.Printf("QUOTE provider=%s err=%v", provider.Name(), err)
 			errs = append(errs, fmt.Sprintf("%s: %v", provider.Name(), err))
 			continue // 单个 provider 失败不影响其他 provider
 		}
+		log.Printf("QUOTE provider=%s amountOut=%s", provider.Name(), quote.AmountOut)
 		quote.Provider = provider.Name()
 		rawQuotes = append(rawQuotes, quote)
 		// 每个 provider 的原始报价单独落库，key 为随机 ID（不是 "最优报价" 的 ID）
@@ -150,6 +153,7 @@ func (s *Service) Quote(ctx context.Context, input QuoteInput) (QuoteResponse, e
 	if err != nil {
 		return QuoteResponse{}, err
 	}
+	log.Printf("QUOTE selected=%s amountOut=%s", best.Provider, best.AmountOut)
 	// 最优报价再次落库，生成新 ID 作为 quoteId 返回给前端；
 	// 后续 /allowance、/approve-tx、/execute 都通过这个 quoteId 查询。
 	saved, err := s.repo.SaveQuote(best)

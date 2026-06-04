@@ -49,7 +49,19 @@ type zeroXQuoteResponse struct {
 	Fees                 map[string]any   `json:"fees"`
 	Transaction          map[string]any   `json:"transaction"`
 	MinBuyAmount         string           `json:"minBuyAmount"`
-	Issues               struct {
+	Route                struct {
+		Fills []struct {
+			From           string `json:"from"`
+			To             string `json:"to"`
+			Source         string `json:"source"`
+			ProportionBps  string `json:"proportionBps"`
+		} `json:"fills"`
+		Tokens []struct {
+			Address string `json:"address"`
+			Symbol  string `json:"symbol"`
+		} `json:"tokens"`
+	} `json:"route"`
+	Issues struct {
 		Allowance struct {
 			Spender string `json:"spender"`
 		} `json:"allowance"`
@@ -122,6 +134,32 @@ func (p *ZeroXProvider) GetQuote(input QuoteInput) (NormalizedQuote, error) {
 	if err != nil {
 		return NormalizedQuote{}, err
 	}
+
+	// 把 0x route.fills 转成统一的 RouteStep，每个 fill 是一跳 DEX
+	var route []RouteStep
+	fills := raw.Route.Fills
+	for i, fill := range fills {
+		step := RouteStep{
+			Protocol:  fill.Source,
+			FromToken: p.cfg.Token(input.ChainID, fill.From).Info(),
+			ToToken:   p.cfg.Token(input.ChainID, fill.To).Info(),
+		}
+		if len(fills) == 1 {
+			// 单跳：直接用顶层金额
+			step.AmountIn = raw.SellAmount
+			step.AmountOut = raw.BuyAmount
+		} else if fill.ProportionBps != "" && fill.ProportionBps != "0" {
+			// 多跳并行拆分：按比例推算每跳金额（串行多跳中间金额 provider 未给，留空）
+			if i == 0 {
+				step.AmountIn = proportionOf(raw.SellAmount, fill.ProportionBps)
+			}
+			if i == len(fills)-1 {
+				step.AmountOut = proportionOf(raw.BuyAmount, fill.ProportionBps)
+			}
+		}
+		route = append(route, step)
+	}
+
 	deadline := time.Now().Add(20 * time.Minute).Unix()
 	expiresAt := time.Now().Add(p.cfg.QuoteTTL)
 	quote := NormalizedQuote{
@@ -137,7 +175,7 @@ func (p *ZeroXProvider) GetQuote(input QuoteInput) (NormalizedQuote, error) {
 		PriceImpactBps: 0,
 		Spender:        spender,
 		TransactionTo:  transactionTo,
-		Route:          nil,
+		Route:          route,
 		RawQuote:       raw,
 		ExpiresAt:      expiresAt,
 		Deadline:       &deadline,

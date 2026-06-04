@@ -7,6 +7,24 @@ import (
 	"strings"
 )
 
+// proportionOf 按 proportionBps（如 "5000" = 50%）计算 total 的对应份额。
+// 用于多路径拆分时推算每跳金额，结果向下取整。
+// 任一参数无效时返回空字符串。
+func proportionOf(total, proportionBps string) string {
+	t, ok := new(big.Int).SetString(total, 10)
+	if !ok {
+		return ""
+	}
+	bps, ok := new(big.Int).SetString(proportionBps, 10)
+	if !ok {
+		return ""
+	}
+	// result = total * proportionBps / 10000
+	result := new(big.Int).Mul(t, bps)
+	result.Div(result, big.NewInt(10000))
+	return result.String()
+}
+
 func normalizeAddress(address string) string {
 	return strings.ToLower(strings.TrimSpace(address))
 }

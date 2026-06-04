@@ -81,7 +81,9 @@ func DefaultConfig() Config {
 
 	cfg.addToken(1, TokenConfig{Address: NativeTokenAddress, Symbol: "ETH", Decimals: 18, RiskTier: "mainstream"})
 	cfg.addToken(1, TokenConfig{Address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", Symbol: "USDC", Decimals: 6, RiskTier: "mainstream"})
+	cfg.addToken(1, TokenConfig{Address: "0xdAC17F958D2ee523a2206206994597C13D831ec7", Symbol: "USDT", Decimals: 6, RiskTier: "mainstream"})
 	cfg.addToken(1, TokenConfig{Address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", Symbol: "WETH", Decimals: 18, RiskTier: "mainstream"})
+	cfg.addToken(1, TokenConfig{Address: "0x6B175474E89094C44Da98b954EedeAC495271d0F", Symbol: "DAI", Decimals: 18, RiskTier: "mainstream"})
 
 	cfg.addToken(56, TokenConfig{Address: NativeTokenAddress, Symbol: "BNB", Decimals: 18, RiskTier: "mainstream"})
 	cfg.addToken(56, TokenConfig{Address: "0x55d398326f99059fF775485246999027B3197955", Symbol: "USDT", Decimals: 18, RiskTier: "mainstream"})

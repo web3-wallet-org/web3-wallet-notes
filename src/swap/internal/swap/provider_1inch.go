@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -27,16 +28,33 @@ func (p *OneInchProvider) Name() string { return "1inch" }
 func (p *OneInchProvider) SupportedChains() []int64 { return []int64{1, 56, 8453} }
 
 type oneInchQuoteResponse struct {
-	FromToken       map[string]any `json:"fromToken"`
-	ToToken         map[string]any `json:"toToken"`
-	FromTokenAmt    string         `json:"srcAmount"`
-	ToTokenAmt      string         `json:"dstAmount"`
-	EstimatedGas    string         `json:"estimatedGas"`
-	Protocols       any            `json:"protocols"`
-	Transaction     map[string]any `json:"tx"`
-	Router          string         `json:"router"`
-	AllowanceTarget string         `json:"allowanceTarget"`
-	PriceImpact     string         `json:"priceImpact"`
+	FromToken       map[string]any        `json:"fromToken"`
+	ToToken         map[string]any        `json:"toToken"`
+	FromTokenAmt    string                `json:"srcAmount"`
+	ToTokenAmt      string                `json:"dstAmount"`
+	EstimatedGas    string                `json:"estimatedGas"`
+	Protocols       []oneInchProtocolHop  `json:"protocols"`
+	Transaction     map[string]any        `json:"tx"`
+	Router          string                `json:"router"`
+	AllowanceTarget string                `json:"allowanceTarget"`
+	PriceImpact     string                `json:"priceImpact"`
+}
+
+// oneInchProtocolHop 是 1inch protocols 的一层，表示经过某个中间 token 的一跳
+type oneInchProtocolHop struct {
+	Token string                    `json:"token"` // 该跳的 fromToken 地址
+	Hops  []oneInchProtocolHopStep  `json:"hops"`
+}
+
+type oneInchProtocolHopStep struct {
+	Part      int                      `json:"part"` // 资金占比 %
+	Dst       string                   `json:"dst"`  // toToken 地址
+	Protocols []oneInchProtocolDetail  `json:"protocols"`
+}
+
+type oneInchProtocolDetail struct {
+	Name string `json:"name"` // DEX 名称，如 UNISWAP_V3、CURVE 等
+	Part int    `json:"part"`
 }
 
 type oneInchApproveSpenderResponse struct {
@@ -83,6 +101,7 @@ func (p *OneInchProvider) GetQuote(input QuoteInput) (NormalizedQuote, error) {
 	q.Set("dst", input.ToToken)
 	q.Set("amount", input.AmountIn)
 	q.Set("from", input.WalletAddress)
+	q.Set("includeProtocols", "true")
 	// slippage 不传给 /quote，该端点只返回价格；slippage 在 BuildSwapTx 调 /swap 时才需要
 	u.RawQuery = q.Encode()
 
@@ -113,6 +132,42 @@ func (p *OneInchProvider) GetQuote(input QuoteInput) (NormalizedQuote, error) {
 	if err != nil {
 		return NormalizedQuote{}, err
 	}
+	// 解析 1inch protocols 路由：
+	// - protocols[].token          = 这段的 fromToken
+	// - protocols[].hops[].dst     = 这段的 toToken
+	// - protocols[].hops[].part    = 这条路径占总资金的 %（用于并行拆单）
+	// - hops[].protocols[].name    = 具体 DEX 名称
+	// - hops[].protocols[].part    = 该 DEX 在这一步的 % （同一步多 DEX 拆分时有意义）
+	// 实际金额 = 总金额 × hop.part% × dex.part%
+	var route []RouteStep
+	for _, segment := range raw.Protocols {
+		for _, hop := range segment.Hops {
+			for _, proto := range hop.Protocols {
+				step := RouteStep{
+					Protocol:  proto.Name,
+					FromToken: p.cfg.Token(input.ChainID, segment.Token).Info(),
+					ToToken:   p.cfg.Token(input.ChainID, hop.Dst).Info(),
+				}
+				// effectiveBps = hop.Part * proto.Part（两者均为 %，乘积即为 bps）
+				effectiveBps := int64(hop.Part * proto.Part)
+				// 第一跳起始 token = fromToken：用 input.AmountIn（1inch /quote 不返回 srcAmount）
+				if normalizeAddress(segment.Token) == normalizeAddress(input.FromToken) {
+					step.AmountIn = proportionOf(input.AmountIn, strconv.FormatInt(effectiveBps, 10))
+				}
+				// 最后一跳：目标 token 匹配，或者目标是 native ETH 而用户请求的是 WETH（两者等价）
+				dstIsTarget := normalizeAddress(hop.Dst) == normalizeAddress(input.ToToken) ||
+					(isNativeToken(hop.Dst) && p.isWrappedNative(input.ChainID, input.ToToken))
+				if dstIsTarget {
+					step.AmountOut = proportionOf(raw.ToTokenAmt, strconv.FormatInt(effectiveBps, 10))
+				}
+				route = append(route, step)
+			}
+		}
+	}
+	if len(route) == 0 {
+		route = []RouteStep{{Protocol: "1inch", FromToken: fromToken.Info(), ToToken: toToken.Info(),
+			AmountIn: input.AmountIn, AmountOut: raw.ToTokenAmt}}
+	}
 	deadline := time.Now().Add(20 * time.Minute).Unix()
 	quote := NormalizedQuote{
 		Provider:       p.Name(),
@@ -127,7 +182,7 @@ func (p *OneInchProvider) GetQuote(input QuoteInput) (NormalizedQuote, error) {
 		PriceImpactBps: 0,
 		Spender:        "", // 延迟获取：spender 在 GetApprovalTarget 中按需获取，避免 GetQuote 阶段多一次 API 调用
 		TransactionTo:  "",
-		Route:          nil,
+		Route:          route,
 		RawQuote:       raw,
 		ExpiresAt:      time.Now().Add(p.cfg.QuoteTTL),
 		Deadline:       &deadline,
@@ -329,4 +384,15 @@ func legacyGasPrice(gasType GasType, tx map[string]any) string {
 		return v
 	}
 	return ""
+}
+
+// isWrappedNative 判断 addr 是否是该链的 wrapped native token（WETH / WBNB 等）。
+// 通过 token 符号是否等于 "W" + 链的 native symbol 来识别。
+func (p *OneInchProvider) isWrappedNative(chainID int64, addr string) bool {
+	chain, ok := p.cfg.Chain(chainID)
+	if !ok {
+		return false
+	}
+	tok := p.cfg.Token(chainID, addr)
+	return tok.Symbol == "W"+chain.NativeSymbol
 }
