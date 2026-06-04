@@ -1,0 +1,39 @@
+server:
+  addr: ":8080"
+
+swap:
+  quote_ttl_seconds: 20
+  max_slippage_bps: 300
+
+  providers:
+    zerox:
+      enabled: true
+      api_key: "d6100a24-0ac5-464d-b8d2-7f8be41f2f4f"
+      base_url: "https://api.0x.org"
+      timeout_ms: 8000
+    oneinch:
+      enabled: true
+      api_key: "9EjNjYEfDcstaafkR8WrfzZfIVmR6zYB"
+      base_url: "https://api.1inch.dev"
+      timeout_ms: 8000
+
+  chains:
+    1:      # Ethereum
+      rpc_url: ""
+    56:     # BSC
+      rpc_url: ""
+    8453:   # Base
+      rpc_url: ""
+
+# 预留，后续按需填充
+database:
+  postgres:
+    dsn: ""
+  mysql:
+    dsn: ""
+  mongo:
+    uri: ""
+  redis:
+    addr: "localhost:6379"
+    password: ""
+    db: 0

@@ -8,15 +8,19 @@ import (
 	"time"
 )
 
+// Service 是业务逻辑核心，所有 swap 流程都经过这里。
+// 它只依赖接口（Repository、ChainClient、QuoteProvider），不直接依赖具体实现，
+// 方便在测试中替换为 fake/mock。
 type Service struct {
 	cfg       Config
-	repo      Repository
-	rpc       ChainClient
-	providers map[string]QuoteProvider
-	now       func() time.Time
+	repo      Repository    // 数据存储（quote、order、event）
+	rpc       ChainClient   // 区块链 RPC（查 allowance、估 gas 等）
+	providers map[string]QuoteProvider // key 为小写 provider 名，如 "0x"、"1inch"
+	now       func() time.Time // 注入时间函数，方便测试时伪造当前时间
 }
 
 func NewService(cfg Config, repo Repository, rpc ChainClient, providers []QuoteProvider, now func() time.Time) *Service {
+	// 转成 map 便于按名字快速查找，key 统一小写避免大小写问题
 	providerMap := map[string]QuoteProvider{}
 	for _, provider := range providers {
 		providerMap[strings.ToLower(provider.Name())] = provider
@@ -29,6 +33,8 @@ func NewService(cfg Config, repo Repository, rpc ChainClient, providers []QuoteP
 		now:       now,
 	}
 }
+
+// ── 响应结构体 ─────────────────────────────────────────────────────────────────
 
 type QuoteResponse struct {
 	QuoteID          string      `json:"quoteId"`
@@ -45,6 +51,8 @@ type QuoteResponse struct {
 	Route            []RouteStep `json:"route"`
 }
 
+// AllowanceResponse 告知前端当前授权是否充足，以及差多少。
+// 前端根据 AllowanceEnough 决定是否弹 approve 流程。
 type AllowanceResponse struct {
 	AllowanceEnough  bool   `json:"allowanceEnough"`
 	Spender          string `json:"spender"`
@@ -52,6 +60,9 @@ type AllowanceResponse struct {
 	CurrentAllowance string `json:"currentAllowance"`
 }
 
+// ApproveTxResponse 返回待签名的 approve 交易体。
+// GasPrice / MaxFeePerGas 二选一，根据链的 gasType 决定（BSC 用 legacy，Ethereum/Base 用 EIP1559）。
+// omitempty 确保不相关的字段不出现在 JSON 里，避免前端混淆。
 type ApproveTxResponse struct {
 	GasType              GasType `json:"gasType"`
 	ChainID              int64   `json:"chainId"`
@@ -64,12 +75,18 @@ type ApproveTxResponse struct {
 	MaxPriorityFeePerGas string  `json:"maxPriorityFeePerGas,omitempty"`
 }
 
+// ExecuteResponse 返回已创建的订单 ID 和待签名的 swap 交易体。
+// GasType 在 transaction 外层，前端据此判断用哪套 gas 字段；
+// 不要把 GasType 混入传给钱包 RPC 的交易对象，钱包不认识这个字段。
 type ExecuteResponse struct {
 	OrderID     string                `json:"orderId"`
 	GasType     GasType               `json:"gasType"`
 	Transaction InternalEvmTxEnvelope `json:"transaction"`
 }
 
+// StatusResponse 是轮询接口的响应。
+// NextAction 指导前端下一步操作（wait / submit_hash / retry_quote / manual_review / nil 终态）。
+// ExpiresAt 仅在 nextAction=retry_quote 时非 nil，供前端展示剩余可用时间倒计时。
 type StatusResponse struct {
 	OrderID      string      `json:"orderId"`
 	Status       OrderStatus `json:"status"`
@@ -87,6 +104,9 @@ type SubmitHashRequest struct {
 	TxHash  string `json:"txHash"`
 }
 
+// ── 核心业务方法 ───────────────────────────────────────────────────────────────
+
+// provider 按名字查找 QuoteProvider，name 统一小写匹配。
 func (s *Service) provider(name string) (QuoteProvider, error) {
 	p, ok := s.providers[strings.ToLower(name)]
 	if !ok {
@@ -95,6 +115,9 @@ func (s *Service) provider(name string) (QuoteProvider, error) {
 	return p, nil
 }
 
+// Quote 同时向所有支持该链的 provider 请求报价，选出 amountOut 最大的一个返回给前端。
+// 每个 provider 的原始报价都会单独落库（SaveQuote），供后续 execute 时重新校验价格用。
+// 只要有一个 provider 成功就不会报错；全部失败才返回错误。
 func (s *Service) Quote(ctx context.Context, input QuoteInput) (QuoteResponse, error) {
 	if err := s.validateQuoteInput(input); err != nil {
 		return QuoteResponse{}, err
@@ -103,15 +126,16 @@ func (s *Service) Quote(ctx context.Context, input QuoteInput) (QuoteResponse, e
 	var errs []string
 	for _, provider := range s.providers {
 		if !containsInt64(provider.SupportedChains(), input.ChainID) {
-			continue
+			continue // 该 provider 不支持此链，直接跳过
 		}
 		quote, err := provider.GetQuote(input)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", provider.Name(), err))
-			continue
+			continue // 单个 provider 失败不影响其他 provider
 		}
 		quote.Provider = provider.Name()
 		rawQuotes = append(rawQuotes, quote)
+		// 每个 provider 的原始报价单独落库，key 为随机 ID（不是 "最优报价" 的 ID）
 		if _, err := s.repo.SaveQuote(quote); err != nil {
 			return QuoteResponse{}, err
 		}
@@ -126,6 +150,8 @@ func (s *Service) Quote(ctx context.Context, input QuoteInput) (QuoteResponse, e
 	if err != nil {
 		return QuoteResponse{}, err
 	}
+	// 最优报价再次落库，生成新 ID 作为 quoteId 返回给前端；
+	// 后续 /allowance、/approve-tx、/execute 都通过这个 quoteId 查询。
 	saved, err := s.repo.SaveQuote(best)
 	if err != nil {
 		return QuoteResponse{}, err
@@ -146,6 +172,9 @@ func (s *Service) Quote(ctx context.Context, input QuoteInput) (QuoteResponse, e
 	}, nil
 }
 
+// Allowance 检查用户对 fromToken 的授权额度是否足以执行该 quote。
+// native token（ETH/BNB）无需 approve，直接返回充足。
+// spender 来自 quote 本身（provider 报价时确定），前端不传 spender，防止被篡改。
 func (s *Service) Allowance(ctx context.Context, quoteID, walletAddress string) (AllowanceResponse, error) {
 	quote, err := s.repo.GetQuote(quoteID)
 	if err != nil {
@@ -154,6 +183,7 @@ func (s *Service) Allowance(ctx context.Context, quoteID, walletAddress string) 
 	if s.now().After(quote.ExpiresAt) {
 		return AllowanceResponse{}, ErrQuoteExpired
 	}
+	// native token 无 ERC20 合约，不存在 allowance 概念，直接放行
 	if isNativeToken(quote.FromToken.Address) {
 		return AllowanceResponse{AllowanceEnough: true, Spender: quote.Spender, RequiredAmount: quote.AmountIn, CurrentAllowance: quote.AmountIn}, nil
 	}
@@ -161,7 +191,7 @@ func (s *Service) Allowance(ctx context.Context, quoteID, walletAddress string) 
 	if err != nil {
 		return AllowanceResponse{}, err
 	}
-	enough := decimalStringGreaterOrEqual(current, quote.AmountIn)
+	enough := decimalStringGreaterOrEqual(current, quote.AmountIn) // current >= amountIn 才算充足
 	return AllowanceResponse{
 		AllowanceEnough:  enough,
 		Spender:          quote.Spender,
@@ -170,6 +200,9 @@ func (s *Service) Allowance(ctx context.Context, quoteID, walletAddress string) 
 	}, nil
 }
 
+// ApproveTx 由 provider 构造 approve 交易（而非本地手写 calldata），
+// 因为不同 provider 的 spender 地址不同（0x 有 AllowanceHolder/Permit2 两种模式），
+// spender 必须来自 provider 当前响应，不能硬编码。
 func (s *Service) ApproveTx(ctx context.Context, quoteID, walletAddress string) (ApproveTxResponse, error) {
 	quote, err := s.repo.GetQuote(quoteID)
 	if err != nil {
@@ -199,6 +232,12 @@ func (s *Service) ApproveTx(ctx context.Context, quoteID, walletAddress string) 
 	}, nil
 }
 
+// Execute 是 swap 的核心执行入口，流程：
+//  1. 检查 quote 是否过期（expiresAt）
+//  2. 检查 allowance（非 native token 必须已足额授权）
+//  3. 风控校验（黑名单、minAmountOut 等）
+//  4. 幂等处理：同一 quoteId 若已有订单，根据订单状态决定是复用还是拒绝
+//  5. 构造 swap 交易并创建订单（状态 SIGNING）
 func (s *Service) Execute(ctx context.Context, quoteID, walletAddress string, walletType WalletType) (ExecuteResponse, error) {
 	quote, err := s.repo.GetQuote(quoteID)
 	if err != nil {
@@ -223,10 +262,14 @@ func (s *Service) Execute(ctx context.Context, quoteID, walletAddress string, wa
 	if !s.validateRisk(quote) {
 		return ExecuteResponse{}, ErrRiskBlocked
 	}
+	// ── 幂等处理 ────────────────────────────────────────────────────────────────
+	// 同一 quoteId 只允许存在一个 swap_order。
+	// SIGNING 状态可以重建交易体（旧 gas 可能过期）；其他状态一律拒绝重复提交。
 	existingOrder, err := s.repo.GetOrderByQuoteID(quote.ID)
 	if err == nil {
 		switch existingOrder.Status {
 		case OrderStatusSigning:
+			// quote 未过期但订单已存在且还没签名 → 重新构造交易体（gas 刷新），复用 orderId
 			swapTx, err := provider.BuildSwapTx(quote, walletAddress)
 			if err != nil {
 				return ExecuteResponse{}, err
@@ -243,10 +286,13 @@ func (s *Service) Execute(ctx context.Context, quoteID, walletAddress string, wa
 			}
 			return ExecuteResponse{OrderID: existingOrder.ID, GasType: swapTx.GasType, Transaction: swapTx}, nil
 		case OrderStatusBroadcasting, OrderStatusTxHashReceived, OrderStatusTxPending:
+			// 交易已在链上流转，拒绝重复提交
 			return ExecuteResponse{}, fmt.Errorf("%w: order already in progress", ErrConflict)
 		case OrderStatusSigningTimeout, OrderStatusAwaitingTxHashTimeout, OrderStatusTxFailed, OrderStatusBroadcastFailed:
+			// 可恢复终态，但必须重新 quote，不能复用旧 quoteId
 			return ExecuteResponse{}, fmt.Errorf("%w: order already failed, re-quote required", ErrConflict)
 		case OrderStatusCompleted, OrderStatusTxConfirmed:
+			// 已完成，同一 quote 不能再次执行
 			return ExecuteResponse{}, fmt.Errorf("%w: order already completed", ErrConflict)
 		}
 	}
@@ -255,6 +301,8 @@ func (s *Service) Execute(ctx context.Context, quoteID, walletAddress string, wa
 	if err != nil {
 		return ExecuteResponse{}, err
 	}
+	// CreateOrder 内部做并发安全的幂等插入（INSERT ON CONFLICT DO NOTHING）；
+	// created=false 说明另一个并发请求已先插入，直接返回冲突。
 	order, created, err := s.repo.CreateOrder(StoredOrder{
 		QuoteID:       quote.ID,
 		UserID:        quote.QuoteInput.UserID,
@@ -283,6 +331,10 @@ func (s *Service) Execute(ctx context.Context, quoteID, walletAddress string, wa
 	}, nil
 }
 
+// SubmitHash 仅适用于外部钱包（MetaMask 等）。
+// 外部钱包在用户设备上签名并广播后，后端不会自动感知 txHash，
+// 所以前端必须在广播成功后立即调用此接口把 txHash 交给后端，
+// 后端才能启动 Monitor 去链上轮询交易状态。
 func (s *Service) SubmitHash(ctx context.Context, req SubmitHashRequest) error {
 	order, err := s.repo.GetOrder(req.OrderID)
 	if err != nil {
@@ -297,6 +349,7 @@ func (s *Service) SubmitHash(ctx context.Context, req SubmitHashRequest) error {
 	if req.TxHash == "" {
 		return fmt.Errorf("%w: txHash required", ErrInvalidArgument)
 	}
+	// 幂等：同一 txHash 重复提交直接返回成功，不重复写库
 	if sameAddress(req.TxHash, order.TxHash) && order.TxHash != "" {
 		return nil
 	}
@@ -311,6 +364,8 @@ func (s *Service) SubmitHash(ctx context.Context, req SubmitHashRequest) error {
 	return nil
 }
 
+// Status 返回订单当前状态和历史事件，供前端轮询使用。
+// nextAction 告知前端下一步该做什么，避免前端自己判断状态逻辑。
 func (s *Service) Status(ctx context.Context, orderID string) (StatusResponse, error) {
 	order, err := s.repo.GetOrder(orderID)
 	if err != nil {
@@ -322,20 +377,22 @@ func (s *Service) Status(ctx context.Context, orderID string) (StatusResponse, e
 	var expiresAt *int64
 	switch order.Status {
 	case OrderStatusSigning, OrderStatusBroadcasting, OrderStatusTxHashReceived, OrderStatusTxPending:
-		action := "wait"
+		action := "wait" // 正在处理中，前端等待即可
 		nextAction = &action
 	case OrderStatusSigningTimeout, OrderStatusAwaitingTxHashTimeout, OrderStatusTxFailed, OrderStatusBroadcastFailed:
-		action := "retry_quote"
+		action := "retry_quote" // 失败且不可恢复，需要重新走 quote 流程
 		nextAction = &action
 		retryable = true
 	case OrderStatusSuspicious, OrderStatusManualReview:
-		action := "manual_review"
+		action := "manual_review" // txHash 内容异常，进入人工处理
 		nextAction = &action
 	case OrderStatusCompleted, OrderStatusTxConfirmed:
-		nextAction = nil
+		nextAction = nil // 终态，不需要操作
 	default:
 		nextAction = nil
 	}
+	// SIGNING/BROADCASTING 状态下，如果订单创建后超过 30 分钟还没签名，
+	// 返回过期时间供前端展示倒计时（实际关闭由后台超时任务处理）
 	if !order.UpdatedAt.IsZero() && (order.Status == OrderStatusSigning || order.Status == OrderStatusBroadcasting) {
 		if order.UpdatedAt.Add(30 * time.Minute).After(s.now()) {
 			exp := order.UpdatedAt.Add(30 * time.Minute).UnixMilli()
@@ -355,6 +412,10 @@ func (s *Service) Status(ctx context.Context, orderID string) (StatusResponse, e
 	}, nil
 }
 
+// ── 内部辅助方法 ───────────────────────────────────────────────────────────────
+
+// selectBestQuote 按 amountOut 降序选出最优报价。
+// 相同 amountOut 时按 provider 名字字母序兜底，保证结果稳定（不随 map 遍历顺序变化）。
 func (s *Service) selectBestQuote(quotes []NormalizedQuote) (NormalizedQuote, error) {
 	if len(quotes) == 0 {
 		return NormalizedQuote{}, ErrNotFound
@@ -367,12 +428,14 @@ func (s *Service) selectBestQuote(quotes []NormalizedQuote) (NormalizedQuote, er
 		return cmp > 0
 	})
 	best := quotes[0]
+	// minAmountOut 不能为 0，否则用户在极端滑点下可能收到 0 个 token
 	if !decimalStringGreaterOrEqual(best.MinAmountOut, "0") {
 		return NormalizedQuote{}, ErrInvalidArgument
 	}
 	return best, nil
 }
 
+// validateQuoteInput 检查用户输入的基本合法性，在调用 provider 之前做快速拦截。
 func (s *Service) validateQuoteInput(input QuoteInput) error {
 	if input.ChainID == 0 {
 		return invalidArgument("chainId is required")
@@ -395,12 +458,17 @@ func (s *Service) validateQuoteInput(input QuoteInput) error {
 	return nil
 }
 
+// validateRisk 是 Phase 1 基础版风控，仅检查：
+//   - minAmountOut 不为 0（链上最低收到量不能为零）
+//   - fromToken / toToken 不在黑名单
+//
+// 增强版（eth_call 模拟、price impact 阈值、额度检查）在 Phase 1 后期补充。
 func (s *Service) validateRisk(quote NormalizedQuote) bool {
 	if quote.MinAmountOut == "0" {
 		return false
 	}
 	if chain, ok := s.cfg.Chain(quote.ChainID); ok {
-		_ = chain
+		_ = chain // 预留：后续可在此按链做额外校验
 	}
 	if _, blocked := s.cfg.TokenBlacklist[quote.ChainID][normalizeAddress(quote.FromToken.Address)]; blocked {
 		return false

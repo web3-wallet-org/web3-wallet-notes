@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(netstat -ano)",
+      "Bash(curl -s 'https://api.1inch.dev/swap/v6.1/1/quote?src=0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48&dst=0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2&amount=100000000&from=0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045' -H 'Authorization: Bearer 9EjNjYEfDcstaafkR8WrfzZfIVmR6zYB')",
+      "Bash(curl -s 'https://api.1inch.dev/swap/v6.1/1/quote?src=0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48&dst=0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2&amount=100000000&from=0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045&slippage=0.5000' -H 'Authorization: Bearer 9EjNjYEfDcstaafkR8WrfzZfIVmR6zYB')"
+    ]
+  }
+}

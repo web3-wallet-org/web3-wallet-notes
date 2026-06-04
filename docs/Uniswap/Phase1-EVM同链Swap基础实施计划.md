@@ -71,51 +71,49 @@ Avalanche
 
 ```text
 用户输入 swap 参数
-  |
-  v
-/swap/quote
-  |
-  v
-Quote Engine
-  |
-  |-- 1inch Adapter
-  |-- 0x Adapter
-  |
-  v
-NormalizedQuote[]
-  |
-  v
-Basic Risk Filter        (黑名单 / spender 白名单 / chainId 校验)
-  |
-  v
-Route Engine 选择最优报价
-  |
-  v
-swap_quotes 落库
-  |
-  v
-前端展示报价
-  |
-  v
-用户确认
-  |
-  v
-检查 allowance
-  |
-  |-- 不足：构造 approve tx
-  |-- 足够：构造 swap tx
-  |
-  v
+  │
+  ▼
+POST /swap/quote                         [http.go → handleQuote]
+  │
+  ▼
+Quote Engine                             [service.go → Quote()]
+  ├── 1inch Provider                     [provider_1inch.go → GetQuote()]
+  └── 0x Provider                        [provider_0x.go   → GetQuote()]
+  │   并发请求，一个失败不影响其他
+  ▼
+NormalizedQuote[]                        [types.go → NormalizedQuote]
+  │   各 provider 响应归一化为统一结构
+  ▼
+Risk Filter                              [service.go → validateRisk()]
+  │   黑名单 + minAmountOut != 0         [config.go → TokenBlacklist]
+  ▼
+选择最优报价                              [service.go → selectBestQuote()]
+  │   按 amountOut 降序
+  ▼
+落库                                      [repository.go → SaveQuote()]
+  │   原始报价 + 最优报价各存一次
+  ▼
+前端展示 → 用户确认
+  │
+  ▼
+检查 allowance                           [service.go → Allowance()]
+  │   native token（ETH/BNB）直接跳过
+  ├── 不足 → 构造 approve tx             [provider.BuildApproveTx()]
+  └── 充足 → 构造 swap tx               [provider.BuildSwapTx()]
+  │           同时创建 swap_order        [service.go → Execute() → repository.go → CreateOrder()]
+  ▼
 用户签名 / MPC 签名
-  |
-  v
+  │
+  ▼
 广播交易
-  |
-  v
-Monitor 监听交易状态
-  |
-  v
-swap_transactions / swap_events 更新（swap_orders 在 /swap/execute 构造时已创建）
+  ├── 外部钱包：POST /swap/submit-hash   [service.go → SubmitHash()]
+  └── custody/MPC：平台内部广播          [Broadcaster，Phase 1 后期实现]
+  │
+  ▼
+Monitor 监听交易状态                      [Phase 1 后期实现，轮询 eth_getTransaction]
+  │
+  ▼
+更新订单状态 / 写入事件                   [repository.go → UpdateOrder() / AddEvent()]
 ```
 
 最重要的原则：

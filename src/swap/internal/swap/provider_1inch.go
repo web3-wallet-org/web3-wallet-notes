@@ -29,8 +29,8 @@ func (p *OneInchProvider) SupportedChains() []int64 { return []int64{1, 56, 8453
 type oneInchQuoteResponse struct {
 	FromToken       map[string]any `json:"fromToken"`
 	ToToken         map[string]any `json:"toToken"`
-	FromTokenAmt    string         `json:"fromTokenAmount"`
-	ToTokenAmt      string         `json:"toTokenAmount"`
+	FromTokenAmt    string         `json:"srcAmount"`
+	ToTokenAmt      string         `json:"dstAmount"`
 	EstimatedGas    string         `json:"estimatedGas"`
 	Protocols       any            `json:"protocols"`
 	Transaction     map[string]any `json:"tx"`
@@ -83,7 +83,7 @@ func (p *OneInchProvider) GetQuote(input QuoteInput) (NormalizedQuote, error) {
 	q.Set("dst", input.ToToken)
 	q.Set("amount", input.AmountIn)
 	q.Set("from", input.WalletAddress)
-	q.Set("slippage", fmt.Sprintf("%.4f", float64(input.SlippageBps)/100))
+	// slippage 不传给 /quote，该端点只返回价格；slippage 在 BuildSwapTx 调 /swap 时才需要
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
@@ -107,10 +107,6 @@ func (p *OneInchProvider) GetQuote(input QuoteInput) (NormalizedQuote, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return NormalizedQuote{}, err
 	}
-	spender, err := p.GetApprovalTarget(NormalizedQuote{ChainID: input.ChainID, RawQuote: raw})
-	if err != nil {
-		return NormalizedQuote{}, err
-	}
 	fromToken := p.cfg.Token(input.ChainID, input.FromToken)
 	toToken := p.cfg.Token(input.ChainID, input.ToToken)
 	minOut, err := minAmountOut(raw.ToTokenAmt, input.SlippageBps)
@@ -129,7 +125,7 @@ func (p *OneInchProvider) GetQuote(input QuoteInput) (NormalizedQuote, error) {
 		GasUSD:         raw.EstimatedGas,
 		FeeUSD:         "",
 		PriceImpactBps: 0,
-		Spender:        spender,
+		Spender:        "", // 延迟获取：spender 在 GetApprovalTarget 中按需获取，避免 GetQuote 阶段多一次 API 调用
 		TransactionTo:  "",
 		Route:          nil,
 		RawQuote:       raw,

@@ -1,0 +1,39 @@
+server:
+  addr: ":8080"
+
+swap:
+  quote_ttl_seconds: 20
+  max_slippage_bps: 300
+
+  providers:
+    zerox:
+      enabled: true
+      api_key: "YOUR_0X_API_KEY"
+      base_url: "https://api.0x.org"
+      timeout_ms: 8000
+    oneinch:
+      enabled: true
+      api_key: "YOUR_1INCH_API_KEY"
+      base_url: "https://api.1inch.dev"
+      timeout_ms: 8000
+
+  chains:
+    1:      # Ethereum
+      rpc_url: "https://mainnet.infura.io/v3/YOUR_KEY"
+    56:     # BSC
+      rpc_url: "https://bsc-dataseed.binance.org"
+    8453:   # Base
+      rpc_url: "https://mainnet.base.org"
+
+# 预留，后续按需填充
+database:
+  postgres:
+    dsn: "postgres://user:pass@localhost:5432/dbname?sslmode=disable"
+  mysql:
+    dsn: "user:pass@tcp(localhost:3306)/dbname?parseTime=true"
+  mongo:
+    uri: "mongodb://localhost:27017"
+  redis:
+    addr: "localhost:6379"
+    password: ""
+    db: 0
