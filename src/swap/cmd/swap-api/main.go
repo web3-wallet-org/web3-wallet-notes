@@ -25,20 +25,22 @@ type ServerConfig struct {
 }
 
 type SwapConfig struct {
-	QuoteTTLSeconds  int                  `yaml:"quote_ttl_seconds"`
-	MaxSlippageBps   int64                `yaml:"max_slippage_bps"`
-	Providers        ProvidersConfig      `yaml:"providers"`
-	Chains           map[int64]ChainEntry `yaml:"chains"`
+	QuoteTTLSeconds int                  `yaml:"quote_ttl_seconds"`
+	MaxSlippageBps  int64                `yaml:"max_slippage_bps"`
+	Providers       ProvidersConfig      `yaml:"providers"`
+	Chains          map[int64]ChainEntry `yaml:"chains"`
 }
 
 type ProvidersConfig struct {
-	ZeroX   ProviderEntry `yaml:"zerox"`
-	OneInch ProviderEntry `yaml:"oneinch"`
+	ZeroX     ProviderEntry `yaml:"zerox"`
+	OneInch   ProviderEntry `yaml:"oneinch"`
+	KyberSwap ProviderEntry `yaml:"kyberswap"`
 }
 
 type ProviderEntry struct {
 	Enabled   bool   `yaml:"enabled"`
 	APIKey    string `yaml:"api_key"`
+	ClientID  string `yaml:"client_id"`
 	BaseURL   string `yaml:"base_url"`
 	TimeoutMs int    `yaml:"timeout_ms"`
 }
@@ -89,6 +91,9 @@ func main() {
 	if appCfg.Swap.Providers.OneInch.Enabled {
 		providers = append(providers, swap.NewOneInchProvider(http.DefaultClient, cfg))
 	}
+	if appCfg.Swap.Providers.KyberSwap.Enabled {
+		providers = append(providers, swap.NewKyberSwapProvider(http.DefaultClient, cfg))
+	}
 	if len(providers) == 0 {
 		log.Fatal("no providers enabled, check config.yaml")
 	}
@@ -135,6 +140,11 @@ func buildSwapConfig(app AppConfig) swap.Config {
 
 	cfg.Provider.ZeroXAPIKey = app.Swap.Providers.ZeroX.APIKey
 	cfg.Provider.OneInchAPIKey = app.Swap.Providers.OneInch.APIKey
+	if v := app.Swap.Providers.KyberSwap.ClientID; v != "" {
+		cfg.Provider.KyberSwapClientID = v
+	} else if v := app.Swap.Providers.KyberSwap.APIKey; v != "" {
+		cfg.Provider.KyberSwapClientID = v
+	}
 
 	if v := app.Swap.Providers.ZeroX.BaseURL; v != "" {
 		cfg.Provider.ZeroXBaseURL = v
@@ -142,7 +152,13 @@ func buildSwapConfig(app AppConfig) swap.Config {
 	if v := app.Swap.Providers.OneInch.BaseURL; v != "" {
 		cfg.Provider.OneInchBaseURL = v
 	}
+	if v := app.Swap.Providers.KyberSwap.BaseURL; v != "" {
+		cfg.Provider.KyberSwapBaseURL = v
+	}
 	if ms := app.Swap.Providers.ZeroX.TimeoutMs; ms > 0 {
+		cfg.Provider.RequestTimeout = time.Duration(ms) * time.Millisecond
+	}
+	if ms := app.Swap.Providers.KyberSwap.TimeoutMs; ms > 0 {
 		cfg.Provider.RequestTimeout = time.Duration(ms) * time.Millisecond
 	}
 

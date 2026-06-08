@@ -14,10 +14,10 @@ import (
 // 方便在测试中替换为 fake/mock。
 type Service struct {
 	cfg       Config
-	repo      Repository    // 数据存储（quote、order、event）
-	rpc       ChainClient   // 区块链 RPC（查 allowance、估 gas 等）
+	repo      Repository               // 数据存储（quote、order、event）
+	rpc       ChainClient              // 区块链 RPC（查 allowance、估 gas 等）
 	providers map[string]QuoteProvider // key 为小写 provider 名，如 "0x"、"1inch"
-	now       func() time.Time // 注入时间函数，方便测试时伪造当前时间
+	now       func() time.Time         // 注入时间函数，方便测试时伪造当前时间
 }
 
 func NewService(cfg Config, repo Repository, rpc ChainClient, providers []QuoteProvider, now func() time.Time) *Service {
@@ -38,18 +38,37 @@ func NewService(cfg Config, repo Repository, rpc ChainClient, providers []QuoteP
 // ── 响应结构体 ─────────────────────────────────────────────────────────────────
 
 type QuoteResponse struct {
-	QuoteID          string      `json:"quoteId"`
-	ExpiresAt        int64       `json:"expiresAt"`
-	Deadline         *int64      `json:"deadline"`
-	SelectedProvider string      `json:"selectedProvider"`
-	FromToken        TokenInfo   `json:"fromToken"`
-	ToToken          TokenInfo   `json:"toToken"`
-	AmountOut        string      `json:"amountOut"`
-	MinAmountOut     string      `json:"minAmountOut"`
-	GasUsd           string      `json:"gasUsd"`
-	FeeUsd           string      `json:"feeUsd"`
-	PriceImpactBps   int64       `json:"priceImpactBps"`
-	Route            []RouteStep `json:"route"`
+	QuoteID            string                `json:"quoteId"`
+	RecommendedQuoteID string                `json:"recommendedQuoteId"`
+	ExpiresAt          int64                 `json:"expiresAt"`
+	Deadline           *int64                `json:"deadline"`
+	SelectedProvider   string                `json:"selectedProvider"`
+	FromToken          TokenInfo             `json:"fromToken"`
+	ToToken            TokenInfo             `json:"toToken"`
+	AmountOut          string                `json:"amountOut"`
+	MinAmountOut       string                `json:"minAmountOut"`
+	GasUsd             string                `json:"gasUsd"`
+	FeeUsd             string                `json:"feeUsd"`
+	PriceImpactBps     int64                 `json:"priceImpactBps"`
+	Route              []RouteStep           `json:"route"`
+	Routes             []QuoteOptionResponse `json:"routes"`
+}
+
+type QuoteOptionResponse struct {
+	QuoteID        string      `json:"quoteId"`
+	Provider       string      `json:"provider"`
+	ChainID        int64       `json:"chainId"`
+	ExpiresAt      int64       `json:"expiresAt"`
+	Deadline       *int64      `json:"deadline"`
+	FromToken      TokenInfo   `json:"fromToken"`
+	ToToken        TokenInfo   `json:"toToken"`
+	AmountIn       string      `json:"amountIn"`
+	AmountOut      string      `json:"amountOut"`
+	MinAmountOut   string      `json:"minAmountOut"`
+	GasUsd         string      `json:"gasUsd"`
+	FeeUsd         string      `json:"feeUsd"`
+	PriceImpactBps int64       `json:"priceImpactBps"`
+	Route          []RouteStep `json:"route"`
 }
 
 // AllowanceResponse 告知前端当前授权是否充足，以及差多少。
@@ -109,7 +128,7 @@ type SubmitHashRequest struct {
 
 // provider 按名字查找 QuoteProvider，name 统一小写匹配。
 func (s *Service) provider(name string) (QuoteProvider, error) {
-	p, ok := s.providers[strings.ToLower(name)]
+	p, ok := s.providers[strings.ToLower(strings.TrimSpace(name))]
 	if !ok {
 		return nil, ErrProviderDisabled
 	}
@@ -123,9 +142,13 @@ func (s *Service) Quote(ctx context.Context, input QuoteInput) (QuoteResponse, e
 	if err := s.validateQuoteInput(input); err != nil {
 		return QuoteResponse{}, err
 	}
+	providers, err := s.quoteProviders(input)
+	if err != nil {
+		return QuoteResponse{}, err
+	}
 	var rawQuotes []NormalizedQuote
 	var errs []string
-	for _, provider := range s.providers {
+	for _, provider := range providers {
 		if !containsInt64(provider.SupportedChains(), input.ChainID) {
 			continue // 该 provider 不支持此链，直接跳过
 		}
@@ -137,6 +160,9 @@ func (s *Service) Quote(ctx context.Context, input QuoteInput) (QuoteResponse, e
 		}
 		log.Printf("QUOTE provider=%s amountOut=%s", provider.Name(), quote.AmountOut)
 		quote.Provider = provider.Name()
+		if quote.ID == "" {
+			quote.ID = newID()
+		}
 		rawQuotes = append(rawQuotes, quote)
 		// 每个 provider 的原始报价单独落库，key 为随机 ID（不是 "最优报价" 的 ID）
 		if _, err := s.repo.SaveQuote(quote); err != nil {
@@ -149,30 +175,28 @@ func (s *Service) Quote(ctx context.Context, input QuoteInput) (QuoteResponse, e
 		}
 		return QuoteResponse{}, ErrUnsupportedChain
 	}
-	best, err := s.selectBestQuote(rawQuotes)
-	if err != nil {
+	if err := s.sortQuoteCandidates(rawQuotes); err != nil {
 		return QuoteResponse{}, err
 	}
+	best := rawQuotes[0]
 	log.Printf("QUOTE selected=%s amountOut=%s", best.Provider, best.AmountOut)
-	// 最优报价再次落库，生成新 ID 作为 quoteId 返回给前端；
-	// 后续 /allowance、/approve-tx、/execute 都通过这个 quoteId 查询。
-	saved, err := s.repo.SaveQuote(best)
-	if err != nil {
-		return QuoteResponse{}, err
-	}
+	// best 已经是已落库的候选 quote；旧顶层 quoteId 直接复用它的 ID。
+	saved := best
 	return QuoteResponse{
-		QuoteID:          saved.ID,
-		ExpiresAt:        saved.ExpiresAt.UnixMilli(),
-		Deadline:         saved.Deadline,
-		SelectedProvider: saved.Provider,
-		FromToken:        saved.FromToken,
-		ToToken:          saved.ToToken,
-		AmountOut:        saved.AmountOut,
-		MinAmountOut:     saved.MinAmountOut,
-		GasUsd:           saved.GasUSD,
-		FeeUsd:           saved.FeeUSD,
-		PriceImpactBps:   saved.PriceImpactBps,
-		Route:            saved.Route,
+		QuoteID:            saved.ID,
+		RecommendedQuoteID: saved.ID,
+		ExpiresAt:          saved.ExpiresAt.UnixMilli(),
+		Deadline:           saved.Deadline,
+		SelectedProvider:   saved.Provider,
+		FromToken:          saved.FromToken,
+		ToToken:            saved.ToToken,
+		AmountOut:          saved.AmountOut,
+		MinAmountOut:       saved.MinAmountOut,
+		GasUsd:             saved.GasUSD,
+		FeeUsd:             saved.FeeUSD,
+		PriceImpactBps:     saved.PriceImpactBps,
+		Route:              saved.Route,
+		Routes:             quoteOptionsFromCandidates(rawQuotes),
 	}, nil
 }
 
@@ -417,6 +441,75 @@ func (s *Service) Status(ctx context.Context, orderID string) (StatusResponse, e
 }
 
 // ── 内部辅助方法 ───────────────────────────────────────────────────────────────
+
+// quoteProviders resolves the provider set for one quote request.
+func (s *Service) quoteProviders(input QuoteInput) ([]QuoteProvider, error) {
+	if strings.TrimSpace(input.Provider) != "" {
+		provider, err := s.provider(input.Provider)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s", ErrProviderDisabled, input.Provider)
+		}
+		if !containsInt64(provider.SupportedChains(), input.ChainID) {
+			return nil, ErrUnsupportedChain
+		}
+		return []QuoteProvider{provider}, nil
+	}
+	providers := make([]QuoteProvider, 0, len(s.providers))
+	for _, provider := range s.providers {
+		if containsInt64(provider.SupportedChains(), input.ChainID) {
+			providers = append(providers, provider)
+		}
+	}
+	sort.SliceStable(providers, func(i, j int) bool {
+		return providers[i].Name() < providers[j].Name()
+	})
+	if len(providers) == 0 {
+		return nil, ErrUnsupportedChain
+	}
+	return providers, nil
+}
+
+func quoteOptionsFromCandidates(quotes []NormalizedQuote) []QuoteOptionResponse {
+	options := make([]QuoteOptionResponse, 0, len(quotes))
+	for _, quote := range quotes {
+		options = append(options, QuoteOptionResponse{
+			QuoteID:        quote.ID,
+			Provider:       quote.Provider,
+			ChainID:        quote.ChainID,
+			ExpiresAt:      quote.ExpiresAt.UnixMilli(),
+			Deadline:       quote.Deadline,
+			FromToken:      quote.FromToken,
+			ToToken:        quote.ToToken,
+			AmountIn:       quote.AmountIn,
+			AmountOut:      quote.AmountOut,
+			MinAmountOut:   quote.MinAmountOut,
+			GasUsd:         quote.GasUSD,
+			FeeUsd:         quote.FeeUSD,
+			PriceImpactBps: quote.PriceImpactBps,
+			Route:          quote.Route,
+		})
+	}
+	return options
+}
+
+func (s *Service) sortQuoteCandidates(quotes []NormalizedQuote) error {
+	if len(quotes) == 0 {
+		return ErrNotFound
+	}
+	sort.SliceStable(quotes, func(i, j int) bool {
+		cmp := decimalStringCmp(quotes[i].AmountOut, quotes[j].AmountOut)
+		if cmp == 0 {
+			return quotes[i].Provider < quotes[j].Provider
+		}
+		return cmp > 0
+	})
+	for _, quote := range quotes {
+		if !decimalStringGreaterOrEqual(quote.MinAmountOut, "0") {
+			return ErrInvalidArgument
+		}
+	}
+	return nil
+}
 
 // selectBestQuote 按 amountOut 降序选出最优报价。
 // 相同 amountOut 时按 provider 名字字母序兜底，保证结果稳定（不随 map 遍历顺序变化）。

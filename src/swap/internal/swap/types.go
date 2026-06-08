@@ -77,6 +77,7 @@ type QuoteInput struct {
 	AmountIn      string `json:"amountIn"`
 	SlippageBps   int64  `json:"slippageBps"`
 	WalletAddress string `json:"walletAddress"`
+	Provider      string `json:"provider,omitempty"`
 }
 
 type NormalizedQuote struct {

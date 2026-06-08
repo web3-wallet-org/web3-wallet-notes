@@ -26,11 +26,13 @@ type TokenConfig struct {
 }
 
 type ProviderConfig struct {
-	ZeroXBaseURL   string
-	ZeroXAPIKey    string
-	OneInchBaseURL string
-	OneInchAPIKey  string
-	RequestTimeout time.Duration
+	ZeroXBaseURL      string
+	ZeroXAPIKey       string
+	OneInchBaseURL    string
+	OneInchAPIKey     string
+	KyberSwapBaseURL  string
+	KyberSwapClientID string
+	RequestTimeout    time.Duration
 }
 
 type Config struct {
@@ -68,9 +70,11 @@ func DefaultConfig() Config {
 		},
 		Tokens: map[int64]map[string]TokenConfig{},
 		Provider: ProviderConfig{
-			ZeroXBaseURL:   "https://api.0x.org",
-			OneInchBaseURL: "https://api.1inch.dev",
-			RequestTimeout: 8 * time.Second,
+			ZeroXBaseURL:      "https://api.0x.org",
+			OneInchBaseURL:    "https://api.1inch.dev",
+			KyberSwapBaseURL:  "https://aggregator-api.kyberswap.com",
+			KyberSwapClientID: "web3-wallet",
+			RequestTimeout:    8 * time.Second,
 		},
 		QuoteTTL:                 20 * time.Second,
 		MaxMainstreamSlippageBps: 300,
@@ -100,12 +104,18 @@ func DefaultConfig() Config {
 func (c *Config) LoadFromEnv() error {
 	c.Provider.ZeroXAPIKey = strings.TrimSpace(os.Getenv("ZEROX_API_KEY"))
 	c.Provider.OneInchAPIKey = strings.TrimSpace(os.Getenv("ONEINCH_API_KEY"))
+	if v := strings.TrimSpace(os.Getenv("KYBERSWAP_CLIENT_ID")); v != "" {
+		c.Provider.KyberSwapClientID = v
+	}
 
 	if v := strings.TrimSpace(os.Getenv("ZEROX_BASE_URL")); v != "" {
 		c.Provider.ZeroXBaseURL = strings.TrimRight(v, "/")
 	}
 	if v := strings.TrimSpace(os.Getenv("ONEINCH_BASE_URL")); v != "" {
 		c.Provider.OneInchBaseURL = strings.TrimRight(v, "/")
+	}
+	if v := strings.TrimSpace(os.Getenv("KYBERSWAP_BASE_URL")); v != "" {
+		c.Provider.KyberSwapBaseURL = strings.TrimRight(v, "/")
 	}
 	if v := strings.TrimSpace(os.Getenv("SWAP_QUOTE_TTL_SECONDS")); v != "" {
 		seconds, err := strconv.Atoi(v)

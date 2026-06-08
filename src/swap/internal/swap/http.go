@@ -21,7 +21,7 @@ func NewHTTPHandler(service *Service) *HTTPHandler {
 func (h *HTTPHandler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	// Go 1.22+ ServeMux 支持 "METHOD /path" 格式，自动按 HTTP 方法路由
-	mux.HandleFunc("POST /swap/quote", h.handleQuote)            // 获取报价：同时询问 0x 和 1inch，返回最优 quote 和 quoteId
+	mux.HandleFunc("POST /swap/quote", h.handleQuote)            // 获取报价：返回成功 provider 候选列表和默认推荐 quoteId
 	mux.HandleFunc("POST /swap/allowance", h.handleAllowance)    // 检查授权：查链上 ERC20 allowance，native token 直接返回充足
 	mux.HandleFunc("POST /swap/approve-tx", h.handleApproveTx)   // 构造 approve 交易：allowance 不足时，生成待签名的 ERC20 approve tx
 	mux.HandleFunc("POST /swap/execute", h.handleExecute)        // 执行 swap：校验 quote 未过期 → 风控 → 构造 swap tx → 创建订单（SIGNING）

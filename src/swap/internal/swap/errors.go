@@ -38,6 +38,8 @@ func apiError(err error) APIError {
 		return APIError{Code: "RISK_BLOCKED", Message: err.Error(), HTTPStatus: http.StatusForbidden}
 	case errors.Is(err, ErrConflict):
 		return APIError{Code: "CONFLICT", Message: err.Error(), HTTPStatus: http.StatusConflict}
+	case errors.Is(err, ErrProviderDisabled):
+		return APIError{Code: "PROVIDER_DISABLED", Message: err.Error(), HTTPStatus: http.StatusBadRequest}
 	case errors.Is(err, ErrNotFound):
 		return APIError{Code: "NOT_FOUND", Message: err.Error(), HTTPStatus: http.StatusNotFound}
 	default:
