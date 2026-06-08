@@ -24,9 +24,7 @@ web3-wallet/
 │  └─ eth/
 ├─ src/
 │  ├─ eth/
-│  ├─ swap/
-│  │  ├─ cmd/
-│  │  └─ internal/
-│  ├─ contracts/  # 旧实践目录，暂时保留
-│  └─ scripts/    # 旧实践目录，暂时保留
+│  └─ swap/
+│     ├─ cmd/
+│     └─ internal/
 ```
