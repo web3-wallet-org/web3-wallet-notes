@@ -24,9 +24,9 @@ swap:
 
   chains:
     1:      # Ethereum
-      rpc_url: ""
+      rpc_url: "https://lb.drpc.live/ethereum/AmcBM73yrEXLhGvmb73giA6C_GhjIfoR8aW0dg7bSgwO"
     56:     # BSC
-      rpc_url: ""
+      rpc_url: "https://lb.drpc.live/bsc/AmcBM73yrEXLhGvmb73giA6C_GhjIfoR8aW0dg7bSgwO"
     8453:   # Base
       rpc_url: ""
 

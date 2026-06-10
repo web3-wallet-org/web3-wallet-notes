@@ -51,10 +51,10 @@ type zeroXQuoteResponse struct {
 	MinBuyAmount         string           `json:"minBuyAmount"`
 	Route                struct {
 		Fills []struct {
-			From           string `json:"from"`
-			To             string `json:"to"`
-			Source         string `json:"source"`
-			ProportionBps  string `json:"proportionBps"`
+			From          string `json:"from"`
+			To            string `json:"to"`
+			Source        string `json:"source"`
+			ProportionBps string `json:"proportionBps"`
 		} `json:"fills"`
 		Tokens []struct {
 			Address string `json:"address"`
@@ -180,9 +180,6 @@ func (p *ZeroXProvider) GetQuote(input QuoteInput) (NormalizedQuote, error) {
 		ExpiresAt:      expiresAt,
 		Deadline:       &deadline,
 		QuoteInput:     input,
-	}
-	if raw.Gas != "" {
-		quote.GasUSD = raw.Gas
 	}
 	if raw.EstimatedPriceImpact != "" {
 		quote.RawQuote = raw

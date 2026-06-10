@@ -28,28 +28,28 @@ func (p *OneInchProvider) Name() string { return "1inch" }
 func (p *OneInchProvider) SupportedChains() []int64 { return []int64{1, 56, 8453} }
 
 type oneInchQuoteResponse struct {
-	FromToken       map[string]any        `json:"fromToken"`
-	ToToken         map[string]any        `json:"toToken"`
-	FromTokenAmt    string                `json:"srcAmount"`
-	ToTokenAmt      string                `json:"dstAmount"`
-	EstimatedGas    string                `json:"estimatedGas"`
-	Protocols       []oneInchProtocolHop  `json:"protocols"`
-	Transaction     map[string]any        `json:"tx"`
-	Router          string                `json:"router"`
-	AllowanceTarget string                `json:"allowanceTarget"`
-	PriceImpact     string                `json:"priceImpact"`
+	FromToken       map[string]any       `json:"fromToken"`
+	ToToken         map[string]any       `json:"toToken"`
+	FromTokenAmt    string               `json:"srcAmount"`
+	ToTokenAmt      string               `json:"dstAmount"`
+	EstimatedGas    string               `json:"estimatedGas"`
+	Protocols       []oneInchProtocolHop `json:"protocols"`
+	Transaction     map[string]any       `json:"tx"`
+	Router          string               `json:"router"`
+	AllowanceTarget string               `json:"allowanceTarget"`
+	PriceImpact     string               `json:"priceImpact"`
 }
 
 // oneInchProtocolHop 是 1inch protocols 的一层，表示经过某个中间 token 的一跳
 type oneInchProtocolHop struct {
-	Token string                    `json:"token"` // 该跳的 fromToken 地址
-	Hops  []oneInchProtocolHopStep  `json:"hops"`
+	Token string                   `json:"token"` // 该跳的 fromToken 地址
+	Hops  []oneInchProtocolHopStep `json:"hops"`
 }
 
 type oneInchProtocolHopStep struct {
-	Part      int                      `json:"part"` // 资金占比 %
-	Dst       string                   `json:"dst"`  // toToken 地址
-	Protocols []oneInchProtocolDetail  `json:"protocols"`
+	Part      int                     `json:"part"` // 资金占比 %
+	Dst       string                  `json:"dst"`  // toToken 地址
+	Protocols []oneInchProtocolDetail `json:"protocols"`
 }
 
 type oneInchProtocolDetail struct {
@@ -159,6 +159,9 @@ func (p *OneInchProvider) GetQuote(input QuoteInput) (NormalizedQuote, error) {
 					(isNativeToken(hop.Dst) && p.isWrappedNative(input.ChainID, input.ToToken))
 				if dstIsTarget {
 					step.AmountOut = proportionOf(raw.ToTokenAmt, strconv.FormatInt(effectiveBps, 10))
+					if isNativeToken(hop.Dst) && p.isWrappedNative(input.ChainID, input.ToToken) {
+						step.ToToken = toToken.Info()
+					}
 				}
 				route = append(route, step)
 			}

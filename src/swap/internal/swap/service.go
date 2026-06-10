@@ -43,6 +43,7 @@ type QuoteResponse struct {
 	ExpiresAt          int64                 `json:"expiresAt"`
 	Deadline           *int64                `json:"deadline"`
 	SelectedProvider   string                `json:"selectedProvider"`
+	Spender            string                `json:"spender"`
 	FromToken          TokenInfo             `json:"fromToken"`
 	ToToken            TokenInfo             `json:"toToken"`
 	AmountOut          string                `json:"amountOut"`
@@ -57,6 +58,7 @@ type QuoteResponse struct {
 type QuoteOptionResponse struct {
 	QuoteID        string      `json:"quoteId"`
 	Provider       string      `json:"provider"`
+	Spender        string      `json:"spender"`
 	ChainID        int64       `json:"chainId"`
 	ExpiresAt      int64       `json:"expiresAt"`
 	Deadline       *int64      `json:"deadline"`
@@ -146,6 +148,13 @@ func (s *Service) Quote(ctx context.Context, input QuoteInput) (QuoteResponse, e
 	if err != nil {
 		return QuoteResponse{}, err
 	}
+	fromToken := s.cfg.Token(input.ChainID, input.FromToken)
+	toToken := s.cfg.Token(input.ChainID, input.ToToken)
+	pair := quotePair(fromToken, toToken)
+	log.Printf("QUOTE request chainId=%d providerFilter=%s userId=%s wallet=%s from=%s(%s) to=%s(%s) amountIn=%s slippageBps=%d",
+		input.ChainID, quoteProviderFilter(input.Provider), input.UserID, input.WalletAddress,
+		fromToken.Symbol, fromToken.Address, toToken.Symbol, toToken.Address,
+		input.AmountIn, input.SlippageBps)
 	var rawQuotes []NormalizedQuote
 	var errs []string
 	for _, provider := range providers {
@@ -154,15 +163,24 @@ func (s *Service) Quote(ctx context.Context, input QuoteInput) (QuoteResponse, e
 		}
 		quote, err := provider.GetQuote(input)
 		if err != nil {
-			log.Printf("QUOTE provider=%s err=%v", provider.Name(), err)
+			log.Printf("QUOTE provider=%s chainId=%d pair=%s amountIn=%s err=%v",
+				provider.Name(), input.ChainID, pair, input.AmountIn, err)
 			errs = append(errs, fmt.Sprintf("%s: %v", provider.Name(), err))
 			continue // 单个 provider 失败不影响其他 provider
 		}
-		log.Printf("QUOTE provider=%s amountOut=%s", provider.Name(), quote.AmountOut)
 		quote.Provider = provider.Name()
 		if quote.ID == "" {
 			quote.ID = newID()
 		}
+		quote, err = s.resolveApprovalTarget(quote, provider)
+		if err != nil {
+			log.Printf("QUOTE provider=%s chainId=%d pair=%s amountIn=%s err=%v",
+				provider.Name(), input.ChainID, pair, input.AmountIn, err)
+			errs = append(errs, fmt.Sprintf("%s: %v", provider.Name(), err))
+			continue
+		}
+		log.Printf("QUOTE provider=%s chainId=%d pair=%s amountIn=%s amountOut=%s minAmountOut=%s gasUsd=%s spender=%s quoteId=%s",
+			provider.Name(), input.ChainID, pair, input.AmountIn, quote.AmountOut, quote.MinAmountOut, quote.GasUSD, quote.Spender, quote.ID)
 		rawQuotes = append(rawQuotes, quote)
 		// 每个 provider 的原始报价单独落库，key 为随机 ID（不是 "最优报价" 的 ID）
 		if _, err := s.repo.SaveQuote(quote); err != nil {
@@ -179,7 +197,8 @@ func (s *Service) Quote(ctx context.Context, input QuoteInput) (QuoteResponse, e
 		return QuoteResponse{}, err
 	}
 	best := rawQuotes[0]
-	log.Printf("QUOTE selected=%s amountOut=%s", best.Provider, best.AmountOut)
+	log.Printf("QUOTE selected=%s chainId=%d pair=%s amountIn=%s amountOut=%s minAmountOut=%s spender=%s quoteId=%s routes=%d",
+		best.Provider, input.ChainID, pair, input.AmountIn, best.AmountOut, best.MinAmountOut, best.Spender, best.ID, len(rawQuotes))
 	// best 已经是已落库的候选 quote；旧顶层 quoteId 直接复用它的 ID。
 	saved := best
 	return QuoteResponse{
@@ -188,6 +207,7 @@ func (s *Service) Quote(ctx context.Context, input QuoteInput) (QuoteResponse, e
 		ExpiresAt:          saved.ExpiresAt.UnixMilli(),
 		Deadline:           saved.Deadline,
 		SelectedProvider:   saved.Provider,
+		Spender:            saved.Spender,
 		FromToken:          saved.FromToken,
 		ToToken:            saved.ToToken,
 		AmountOut:          saved.AmountOut,
@@ -204,22 +224,45 @@ func (s *Service) Quote(ctx context.Context, input QuoteInput) (QuoteResponse, e
 // native token（ETH/BNB）无需 approve，直接返回充足。
 // spender 来自 quote 本身（provider 报价时确定），前端不传 spender，防止被篡改。
 func (s *Service) Allowance(ctx context.Context, quoteID, walletAddress string) (AllowanceResponse, error) {
+	if strings.TrimSpace(quoteID) == "" {
+		return AllowanceResponse{}, invalidArgument("quoteId is required")
+	}
+	if strings.TrimSpace(walletAddress) == "" {
+		return AllowanceResponse{}, invalidArgument("walletAddress is required")
+	}
+	log.Printf("ALLOWANCE request quoteId=%s wallet=%s", quoteID, walletAddress)
 	quote, err := s.repo.GetQuote(quoteID)
 	if err != nil {
+		log.Printf("ALLOWANCE quoteId=%s wallet=%s err=%v", quoteID, walletAddress, err)
 		return AllowanceResponse{}, err
 	}
+	pair := quoteTokenPair(quote.FromToken, quote.ToToken)
 	if s.now().After(quote.ExpiresAt) {
+		log.Printf("ALLOWANCE provider=%s chainId=%d pair=%s amountIn=%s wallet=%s quoteId=%s err=%v",
+			quote.Provider, quote.ChainID, pair, quote.AmountIn, walletAddress, quote.ID, ErrQuoteExpired)
 		return AllowanceResponse{}, ErrQuoteExpired
 	}
 	// native token 无 ERC20 合约，不存在 allowance 概念，直接放行
 	if isNativeToken(quote.FromToken.Address) {
+		log.Printf("ALLOWANCE provider=%s chainId=%d pair=%s amountIn=%s wallet=%s spender=%s currentAllowance=%s allowanceEnough=%t quoteId=%s native=%t",
+			quote.Provider, quote.ChainID, pair, quote.AmountIn, walletAddress, quote.Spender, quote.AmountIn, true, quote.ID, true)
 		return AllowanceResponse{AllowanceEnough: true, Spender: quote.Spender, RequiredAmount: quote.AmountIn, CurrentAllowance: quote.AmountIn}, nil
+	}
+	quote, err = s.ensureApprovalTarget(quote)
+	if err != nil {
+		log.Printf("ALLOWANCE provider=%s chainId=%d pair=%s amountIn=%s wallet=%s quoteId=%s err=%v",
+			quote.Provider, quote.ChainID, pair, quote.AmountIn, walletAddress, quote.ID, err)
+		return AllowanceResponse{}, err
 	}
 	current, err := s.rpc.GetAllowance(ctx, quote.ChainID, quote.FromToken.Address, walletAddress, quote.Spender)
 	if err != nil {
+		log.Printf("ALLOWANCE provider=%s chainId=%d pair=%s amountIn=%s wallet=%s spender=%s quoteId=%s err=%v",
+			quote.Provider, quote.ChainID, pair, quote.AmountIn, walletAddress, quote.Spender, quote.ID, err)
 		return AllowanceResponse{}, err
 	}
 	enough := decimalStringGreaterOrEqual(current, quote.AmountIn) // current >= amountIn 才算充足
+	log.Printf("ALLOWANCE provider=%s chainId=%d pair=%s amountIn=%s wallet=%s spender=%s currentAllowance=%s allowanceEnough=%t quoteId=%s native=%t",
+		quote.Provider, quote.ChainID, pair, quote.AmountIn, walletAddress, quote.Spender, current, enough, quote.ID, false)
 	return AllowanceResponse{
 		AllowanceEnough:  enough,
 		Spender:          quote.Spender,
@@ -232,21 +275,50 @@ func (s *Service) Allowance(ctx context.Context, quoteID, walletAddress string) 
 // 因为不同 provider 的 spender 地址不同（0x 有 AllowanceHolder/Permit2 两种模式），
 // spender 必须来自 provider 当前响应，不能硬编码。
 func (s *Service) ApproveTx(ctx context.Context, quoteID, walletAddress string) (ApproveTxResponse, error) {
+	if strings.TrimSpace(quoteID) == "" {
+		return ApproveTxResponse{}, invalidArgument("quoteId is required")
+	}
+	if strings.TrimSpace(walletAddress) == "" {
+		return ApproveTxResponse{}, invalidArgument("walletAddress is required")
+	}
+	log.Printf("APPROVE_TX request quoteId=%s wallet=%s", quoteID, walletAddress)
 	quote, err := s.repo.GetQuote(quoteID)
 	if err != nil {
+		log.Printf("APPROVE_TX quoteId=%s wallet=%s err=%v", quoteID, walletAddress, err)
 		return ApproveTxResponse{}, err
 	}
+	pair := quoteTokenPair(quote.FromToken, quote.ToToken)
 	if s.now().After(quote.ExpiresAt) {
+		log.Printf("APPROVE_TX provider=%s chainId=%d pair=%s amountIn=%s wallet=%s quoteId=%s err=%v",
+			quote.Provider, quote.ChainID, pair, quote.AmountIn, walletAddress, quote.ID, ErrQuoteExpired)
 		return ApproveTxResponse{}, ErrQuoteExpired
+	}
+	if isNativeToken(quote.FromToken.Address) {
+		err := invalidArgument("native token does not require approve")
+		log.Printf("APPROVE_TX provider=%s chainId=%d pair=%s amountIn=%s wallet=%s quoteId=%s err=%v",
+			quote.Provider, quote.ChainID, pair, quote.AmountIn, walletAddress, quote.ID, err)
+		return ApproveTxResponse{}, err
+	}
+	quote, err = s.ensureApprovalTarget(quote)
+	if err != nil {
+		log.Printf("APPROVE_TX provider=%s chainId=%d pair=%s amountIn=%s wallet=%s quoteId=%s err=%v",
+			quote.Provider, quote.ChainID, pair, quote.AmountIn, walletAddress, quote.ID, err)
+		return ApproveTxResponse{}, err
 	}
 	provider, err := s.provider(quote.Provider)
 	if err != nil {
+		log.Printf("APPROVE_TX provider=%s chainId=%d pair=%s amountIn=%s wallet=%s spender=%s quoteId=%s err=%v",
+			quote.Provider, quote.ChainID, pair, quote.AmountIn, walletAddress, quote.Spender, quote.ID, err)
 		return ApproveTxResponse{}, err
 	}
 	env, err := provider.BuildApproveTx(quote, walletAddress)
 	if err != nil {
+		log.Printf("APPROVE_TX provider=%s chainId=%d pair=%s amountIn=%s wallet=%s spender=%s token=%s quoteId=%s err=%v",
+			quote.Provider, quote.ChainID, pair, quote.AmountIn, walletAddress, quote.Spender, quote.FromToken.Address, quote.ID, err)
 		return ApproveTxResponse{}, err
 	}
+	log.Printf("APPROVE_TX provider=%s chainId=%d pair=%s amountIn=%s wallet=%s spender=%s token=%s txTo=%s gasType=%s gasLimit=%s quoteId=%s",
+		quote.Provider, quote.ChainID, pair, quote.AmountIn, walletAddress, quote.Spender, quote.FromToken.Address, env.To, env.GasType, env.GasLimit, quote.ID)
 	return ApproveTxResponse{
 		GasType:              env.GasType,
 		ChainID:              env.ChainID,
@@ -279,6 +351,10 @@ func (s *Service) Execute(ctx context.Context, quoteID, walletAddress string, wa
 		return ExecuteResponse{}, err
 	}
 	if isNativeToken(quote.FromToken.Address) == false {
+		quote, err = s.ensureApprovalTarget(quote)
+		if err != nil {
+			return ExecuteResponse{}, err
+		}
 		allowance, err := s.rpc.GetAllowance(ctx, quote.ChainID, quote.FromToken.Address, walletAddress, quote.Spender)
 		if err != nil {
 			return ExecuteResponse{}, err
@@ -475,6 +551,7 @@ func quoteOptionsFromCandidates(quotes []NormalizedQuote) []QuoteOptionResponse 
 		options = append(options, QuoteOptionResponse{
 			QuoteID:        quote.ID,
 			Provider:       quote.Provider,
+			Spender:        quote.Spender,
 			ChainID:        quote.ChainID,
 			ExpiresAt:      quote.ExpiresAt.UnixMilli(),
 			Deadline:       quote.Deadline,
@@ -490,6 +567,65 @@ func quoteOptionsFromCandidates(quotes []NormalizedQuote) []QuoteOptionResponse 
 		})
 	}
 	return options
+}
+
+func quotePair(fromToken, toToken TokenConfig) string {
+	return fromToken.Symbol + "->" + toToken.Symbol
+}
+
+func quoteTokenPair(fromToken, toToken TokenInfo) string {
+	return fromToken.Symbol + "->" + toToken.Symbol
+}
+
+func quoteProviderFilter(provider string) string {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return "all"
+	}
+	return strings.ToLower(provider)
+}
+
+func (s *Service) resolveApprovalTarget(quote NormalizedQuote, provider QuoteProvider) (NormalizedQuote, error) {
+	if isNativeToken(quote.FromToken.Address) {
+		quote.Spender = ""
+		return quote, nil
+	}
+	if spender := strings.TrimSpace(quote.Spender); spender != "" {
+		quote.Spender = spender
+		return quote, nil
+	}
+	if provider == nil {
+		var err error
+		provider, err = s.provider(quote.Provider)
+		if err != nil {
+			return NormalizedQuote{}, err
+		}
+	}
+	if !containsInt64(provider.SupportedChains(), quote.ChainID) {
+		return NormalizedQuote{}, ErrUnsupportedChain
+	}
+	spender, err := provider.GetApprovalTarget(quote)
+	if err != nil {
+		return NormalizedQuote{}, err
+	}
+	spender = strings.TrimSpace(spender)
+	if spender == "" {
+		return NormalizedQuote{}, invalidArgument("approval target missing for provider %s", quote.Provider)
+	}
+	quote.Spender = spender
+	return quote, nil
+}
+
+func (s *Service) ensureApprovalTarget(quote NormalizedQuote) (NormalizedQuote, error) {
+	resolved, err := s.resolveApprovalTarget(quote, nil)
+	if err != nil {
+		return NormalizedQuote{}, err
+	}
+	if resolved.Spender == quote.Spender {
+		return resolved, nil
+	}
+	quote = resolved
+	return s.repo.SaveQuote(quote)
 }
 
 func (s *Service) sortQuoteCandidates(quotes []NormalizedQuote) error {

@@ -55,6 +55,7 @@ paths:
     post:
       tags: [Swap]
       summary: 检查授权额度
+      description: 根据 quoteId 读取已保存的 quote，并检查 walletAddress 对 quote.fromToken 的 ERC20 allowance。spender 由后端按 quote.provider 解析 approval target，前端不需要也不能传 spender。native token 直接返回 allowanceEnough=true。
       requestBody:
         required: true
         content:
@@ -75,6 +76,7 @@ paths:
     post:
       tags: [Swap]
       summary: 构造 approve 交易
+      description: 仅用于 ERC20 fromToken 授权。后端根据 quoteId 读取 quote 内部保存的 spender 并构造 approve 交易，前端不传 spender。fromToken 是 native token 时不需要 approve，会返回 INVALID_ARGUMENT。
       requestBody:
         required: true
         content:
@@ -202,6 +204,11 @@ components:
         walletAddress:
           type: string
           example: "0x1111111111111111111111111111111111111111"
+        provider:
+          type: string
+          description: 可选。指定后只请求该 provider；不传时请求所有启用且支持当前链的 provider。
+          enum: ["0x", "1inch", "kyberswap"]
+          example: kyberswap
 
     QuoteWalletRequest:
       type: object
@@ -211,6 +218,7 @@ components:
       properties:
         quoteId:
           type: string
+          description: 来自 /swap/quote 顶层 quoteId/recommendedQuoteId，或用户选择的 routes[].quoteId。
           example: 018f6a9a-4266-4a5d-a990-3d6a02adbe4c
         walletAddress:
           type: string
@@ -221,7 +229,6 @@ components:
       required:
         - quoteId
         - walletAddress
-        - walletType
       properties:
         quoteId:
           type: string
@@ -230,6 +237,7 @@ components:
           type: string
           example: "0x1111111111111111111111111111111111111111"
         walletType:
+          description: 可选；不传时后端按 external 处理。
           $ref: "#/components/schemas/WalletType"
 
     SubmitHashRequest:
@@ -251,6 +259,10 @@ components:
         quoteId:
           type: string
           example: 018f6a9a-4266-4a5d-a990-3d6a02adbe4c
+        recommendedQuoteId:
+          type: string
+          description: 默认推荐候选的 quoteId，等于 routes[0].quoteId。
+          example: 018f6a9a-4266-4a5d-a990-3d6a02adbe4c
         expiresAt:
           type: integer
           format: int64
@@ -264,7 +276,12 @@ components:
           example: 1730001200
         selectedProvider:
           type: string
+          enum: ["0x", "1inch", "kyberswap"]
           example: 1inch
+        spender:
+          type: string
+          description: 默认推荐 quote 的 ERC20 approval target。fromToken 是 native token 时为空字符串。
+          example: "0x2222222222222222222222222222222222222222"
         fromToken:
           $ref: "#/components/schemas/TokenInfo"
         toToken:
@@ -277,6 +294,7 @@ components:
           example: "122839505"
         gasUsd:
           type: string
+          description: provider 明确返回 USD gas 时填写；无法确认 USD gas 时为空字符串。
           example: "2.13"
         feeUsd:
           type: string
@@ -285,6 +303,69 @@ components:
           type: integer
           format: int64
           example: 12
+        route:
+          type: array
+          items:
+            $ref: "#/components/schemas/RouteStep"
+        routes:
+          type: array
+          description: 所有成功 provider 候选，按 amountOut 降序排列。前端选择某个候选后，后续 allowance/approve-tx/execute 使用该候选的 quoteId。
+          items:
+            $ref: "#/components/schemas/QuoteOptionResponse"
+
+    QuoteOptionResponse:
+      type: object
+      properties:
+        quoteId:
+          type: string
+          example: 018f6a9a-4266-4a5d-a990-3d6a02adbe4c
+        provider:
+          type: string
+          enum: ["0x", "1inch", "kyberswap"]
+          example: kyberswap
+        spender:
+          type: string
+          description: 当前候选 quote 的 ERC20 approval target。后续 allowance/approve-tx/execute 仍只传 quoteId，不传 spender。fromToken 是 native token 时为空字符串。
+          example: "0x2222222222222222222222222222222222222222"
+        chainId:
+          type: integer
+          format: int64
+          example: 1
+        expiresAt:
+          type: integer
+          format: int64
+          description: Unix milliseconds
+          example: 1730000000000
+        deadline:
+          type: integer
+          format: int64
+          nullable: true
+          description: Unix seconds
+          example: 1730001200
+        fromToken:
+          $ref: "#/components/schemas/TokenInfo"
+        toToken:
+          $ref: "#/components/schemas/TokenInfo"
+        amountIn:
+          type: string
+          example: "100000000"
+        amountOut:
+          type: string
+          example: "123456789"
+        minAmountOut:
+          type: string
+          example: "122839505"
+        gasUsd:
+          type: string
+          description: provider 明确返回 USD gas 时填写；无法确认 USD gas 时为空字符串。
+          example: "2.13"
+        feeUsd:
+          type: string
+          example: "0.00"
+        priceImpactBps:
+          type: integer
+          format: int64
+          example: 0
         route:
           type: array
           items:
@@ -298,12 +379,15 @@ components:
           example: false
         spender:
           type: string
+          description: 后端按 quote.provider 解析出的 approval target；ERC20 approve 应授权给该地址。
           example: "0x2222222222222222222222222222222222222222"
         requiredAmount:
           type: string
+          description: 本次 swap 需要授权的 fromToken 原始精度数量，等于 quote.amountIn。
           example: "100000000"
         currentAllowance:
           type: string
+          description: 链上 allowance(owner=walletAddress, spender) 当前值，原始精度整数。
           example: "0"
 
     ExecuteResponse:
@@ -437,6 +521,15 @@ components:
       properties:
         code:
           type: string
+          enum:
+            - INVALID_ARGUMENT
+            - UNSUPPORTED_CHAIN
+            - QUOTE_EXPIRED
+            - RISK_BLOCKED
+            - CONFLICT
+            - PROVIDER_DISABLED
+            - NOT_FOUND
+            - INTERNAL_ERROR
           example: INVALID_ARGUMENT
         message:
           type: string
