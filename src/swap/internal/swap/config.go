@@ -74,7 +74,7 @@ func DefaultConfig() Config {
 			OneInchBaseURL:    "https://api.1inch.dev",
 			KyberSwapBaseURL:  "https://aggregator-api.kyberswap.com",
 			KyberSwapClientID: "web3-wallet",
-			RequestTimeout:    8 * time.Second,
+			RequestTimeout:    16 * time.Second,
 		},
 		QuoteTTL:                 20 * time.Second,
 		MaxMainstreamSlippageBps: 300,

@@ -10,17 +10,17 @@ swap:
       enabled: true
       api_key: "d6100a24-0ac5-464d-b8d2-7f8be41f2f4f"
       base_url: "https://api.0x.org"
-      timeout_ms: 8000
+      timeout_ms: 16000
     oneinch:
       enabled: true
       api_key: "9EjNjYEfDcstaafkR8WrfzZfIVmR6zYB"
       base_url: "https://api.1inch.dev"
-      timeout_ms: 8000
+      timeout_ms: 16000
     kyberswap:
       enabled: true
       client_id: "web3-wallet"
       base_url: "https://aggregator-api.kyberswap.com"
-      timeout_ms: 8000
+      timeout_ms: 16000
 
   chains:
     1:      # Ethereum
