@@ -7,9 +7,11 @@ import (
 	"os"
 	"time"
 
+	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 
 	"github.com/web3-wallet-org/web3-wallet/src/swap/internal/swap"
+	applog "github.com/web3-wallet-org/web3-wallet/src/swap/pkg/log"
 )
 
 // AppConfig 是 config.yaml 的完整映射。
@@ -77,6 +79,13 @@ type RedisConfig struct {
 func main() {
 	configPath := flag.String("config", "config.yaml", "配置文件路径")
 	flag.Parse()
+
+	logger, err := zap.NewProduction()
+	if err != nil {
+		log.Fatalf("init logger: %v", err)
+	}
+	defer logger.Sync()
+	applog.Init(logger)
 
 	appCfg := loadConfig(*configPath)
 	cfg := buildSwapConfig(appCfg)

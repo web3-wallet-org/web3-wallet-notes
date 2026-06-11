@@ -50,6 +50,9 @@ type fakeProvider struct {
 	approveErr      error
 	approveCalls    *int
 	swapTx          InternalEvmTxEnvelope
+	swapErr         error
+	swapCalls       *int
+	swapTaker       *string
 	approveSpender  *string
 	swapSpender     *string
 }
@@ -102,8 +105,17 @@ func (f fakeProvider) BuildApproveTx(quote NormalizedQuote, taker string) (Inter
 	return f.approveTx, nil
 }
 func (f fakeProvider) BuildSwapTx(quote NormalizedQuote, taker string) (InternalEvmTxEnvelope, error) {
+	if f.swapCalls != nil {
+		*f.swapCalls += 1
+	}
+	if f.swapTaker != nil {
+		*f.swapTaker = taker
+	}
 	if f.swapSpender != nil {
 		*f.swapSpender = quote.Spender
+	}
+	if f.swapErr != nil {
+		return InternalEvmTxEnvelope{}, f.swapErr
 	}
 	return f.swapTx, nil
 }
@@ -350,6 +362,135 @@ func TestExecuteUsesSelectedRouteQuoteID(t *testing.T) {
 	}
 	if exec.Transaction.To != "0xrouter0" {
 		t.Fatalf("expected selected 0x route tx, got %+v", exec.Transaction)
+	}
+}
+
+func TestExecuteRejectsInvalidInput(t *testing.T) {
+	svc := newTestService(t, nil)
+	tests := []struct {
+		name          string
+		quoteID       string
+		walletAddress string
+		walletType    WalletType
+	}{
+		{name: "empty quote id", quoteID: "", walletAddress: "0xwallet", walletType: WalletTypeExternal},
+		{name: "empty wallet", quoteID: "quote-id", walletAddress: "", walletType: WalletTypeExternal},
+		{name: "invalid wallet type", quoteID: "quote-id", walletAddress: "0xwallet", walletType: WalletType("invalid")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := svc.Execute(context.Background(), tt.quoteID, tt.walletAddress, tt.walletType)
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("expected invalid argument, got %v", err)
+			}
+		})
+	}
+}
+
+func TestExecuteRejectsExpiredQuote(t *testing.T) {
+	svc := newTestService(t, []QuoteProvider{fakeProvider{name: "0x"}})
+	quote, err := svc.repo.SaveQuote(NormalizedQuote{
+		Provider:  "0x",
+		ChainID:   1,
+		FromToken: TokenInfo{Address: "0xToken", Symbol: "T", Decimals: 18},
+		ToToken:   TokenInfo{Address: "0xOut", Symbol: "O", Decimals: 18},
+		AmountIn:  "100",
+		Spender:   "0xspender",
+		ExpiresAt: time.Unix(-1, 0),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Execute(context.Background(), quote.ID, "0xwallet", WalletTypeExternal); !errors.Is(err, ErrQuoteExpired) {
+		t.Fatalf("expected quote expired, got %v", err)
+	}
+}
+
+func TestExecuteRejectsInsufficientAllowance(t *testing.T) {
+	now := func() time.Time { return time.Unix(0, 0) }
+	repo := NewMemoryRepository(now)
+	allowanceCalls := 0
+	swapCalls := 0
+	svc := NewService(DefaultConfig(), repo, fakeRPC{
+		allowance:      "99",
+		allowanceCalls: &allowanceCalls,
+	}, []QuoteProvider{
+		fakeProvider{
+			name:      "0x",
+			swapCalls: &swapCalls,
+			swapTx:    InternalEvmTxEnvelope{GasType: GasTypeEIP1559, ChainID: 1, To: "0xrouter", Data: "0xswap", Value: "0", GasLimit: "185000"},
+		},
+	}, now)
+	quote, err := repo.SaveQuote(NormalizedQuote{
+		Provider:     "0x",
+		ChainID:      1,
+		FromToken:    TokenInfo{Address: "0xToken", Symbol: "T", Decimals: 18},
+		ToToken:      TokenInfo{Address: "0xOut", Symbol: "O", Decimals: 18},
+		AmountIn:     "100",
+		AmountOut:    "200",
+		MinAmountOut: "1",
+		Spender:      "0xspender",
+		ExpiresAt:    time.Unix(60, 0),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Execute(context.Background(), quote.ID, "0xwallet", WalletTypeExternal); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected invalid argument for insufficient allowance, got %v", err)
+	}
+	if allowanceCalls != 1 {
+		t.Fatalf("expected one allowance call, got %d", allowanceCalls)
+	}
+	if swapCalls != 0 {
+		t.Fatalf("expected insufficient allowance to skip swap build, got %d calls", swapCalls)
+	}
+}
+
+func TestExecuteSkipsAllowanceForNativeToken(t *testing.T) {
+	now := func() time.Time { return time.Unix(0, 0) }
+	repo := NewMemoryRepository(now)
+	allowanceCalls := 0
+	approvalCalls := 0
+	swapCalls := 0
+	svc := NewService(DefaultConfig(), repo, fakeRPC{
+		allowanceCalls: &allowanceCalls,
+	}, []QuoteProvider{
+		fakeProvider{
+			name:          "0x",
+			approvalCalls: &approvalCalls,
+			swapCalls:     &swapCalls,
+			swapTx:        InternalEvmTxEnvelope{GasType: GasTypeEIP1559, ChainID: 1, To: "0xrouter", Data: "0xswap", Value: "100", GasLimit: "185000"},
+		},
+	}, now)
+	quote, err := repo.SaveQuote(NormalizedQuote{
+		Provider:     "0x",
+		ChainID:      1,
+		FromToken:    TokenInfo{Address: NativeTokenAddress, Symbol: "ETH", Decimals: 18},
+		ToToken:      TokenInfo{Address: "0xOut", Symbol: "O", Decimals: 18},
+		AmountIn:     "100",
+		AmountOut:    "200",
+		MinAmountOut: "1",
+		ExpiresAt:    time.Unix(60, 0),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec, err := svc.Execute(context.Background(), quote.ID, "0xwallet", WalletTypeExternal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exec.Transaction.To != "0xrouter" || exec.Transaction.Value != "100" {
+		t.Fatalf("unexpected native swap tx: %+v", exec.Transaction)
+	}
+	if allowanceCalls != 0 || approvalCalls != 0 || swapCalls != 1 {
+		t.Fatalf("expected native execute to skip allowance/approval and build once, allowance=%d approval=%d swap=%d", allowanceCalls, approvalCalls, swapCalls)
+	}
+	order, err := repo.GetOrder(exec.OrderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if order.Status != OrderStatusSigning || order.Spender != "" {
+		t.Fatalf("unexpected native order: %+v", order)
 	}
 }
 
@@ -716,9 +857,17 @@ func TestExecuteResolvesProviderSpender(t *testing.T) {
 	if order.Spender != "0xapproval" {
 		t.Fatalf("expected order spender to be resolved, got %s", order.Spender)
 	}
+	cached, err := repo.GetQuote(quote.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cached.Spender != "0xapproval" {
+		t.Fatalf("expected resolved spender cached on quote, got %s", cached.Spender)
+	}
 }
 
 func TestExecuteReusesSigningOrder(t *testing.T) {
+	swapCalls := 0
 	provider := fakeProvider{
 		name: "0x",
 		quote: NormalizedQuote{
@@ -737,6 +886,7 @@ func TestExecuteReusesSigningOrder(t *testing.T) {
 			Value:    "0",
 			GasLimit: "185000",
 		},
+		swapCalls: &swapCalls,
 	}
 	svc := newTestService(t, []QuoteProvider{provider})
 	q, err := svc.Quote(context.Background(), QuoteInput{
@@ -755,6 +905,98 @@ func TestExecuteReusesSigningOrder(t *testing.T) {
 	}
 	if exec1.OrderID != exec2.OrderID {
 		t.Fatalf("expected same order id, got %s and %s", exec1.OrderID, exec2.OrderID)
+	}
+	if swapCalls != 2 {
+		t.Fatalf("expected signing order to rebuild swap tx on second execute, got %d calls", swapCalls)
+	}
+}
+
+func TestExecuteReturnsProviderBuildSwapError(t *testing.T) {
+	now := func() time.Time { return time.Unix(0, 0) }
+	repo := NewMemoryRepository(now)
+	swapErr := errors.New("build swap failed")
+	swapCalls := 0
+	svc := NewService(DefaultConfig(), repo, fakeRPC{allowance: "1000"}, []QuoteProvider{
+		fakeProvider{name: "0x", swapErr: swapErr, swapCalls: &swapCalls},
+	}, now)
+	quote, err := repo.SaveQuote(NormalizedQuote{
+		Provider:     "0x",
+		ChainID:      1,
+		FromToken:    TokenInfo{Address: "0xToken", Symbol: "T", Decimals: 18},
+		ToToken:      TokenInfo{Address: "0xOut", Symbol: "O", Decimals: 18},
+		AmountIn:     "100",
+		AmountOut:    "200",
+		MinAmountOut: "1",
+		Spender:      "0xspender",
+		ExpiresAt:    time.Unix(60, 0),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Execute(context.Background(), quote.ID, "0xwallet", WalletTypeExternal); !errors.Is(err, swapErr) {
+		t.Fatalf("expected build swap error, got %v", err)
+	}
+	if swapCalls != 1 {
+		t.Fatalf("expected one swap build call, got %d", swapCalls)
+	}
+}
+
+func TestExecuteRejectsExistingOrderStates(t *testing.T) {
+	tests := []struct {
+		name   string
+		status OrderStatus
+	}{
+		{name: "in progress", status: OrderStatusTxPending},
+		{name: "failed", status: OrderStatusTxFailed},
+		{name: "completed", status: OrderStatusCompleted},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now := func() time.Time { return time.Unix(0, 0) }
+			repo := NewMemoryRepository(now)
+			swapCalls := 0
+			svc := NewService(DefaultConfig(), repo, fakeRPC{allowance: "1000"}, []QuoteProvider{
+				fakeProvider{
+					name:      "0x",
+					swapCalls: &swapCalls,
+					swapTx:    InternalEvmTxEnvelope{GasType: GasTypeEIP1559, ChainID: 1, To: "0xrouter", Data: "0xswap", Value: "0", GasLimit: "185000"},
+				},
+			}, now)
+			quote, err := repo.SaveQuote(NormalizedQuote{
+				Provider:     "0x",
+				ChainID:      1,
+				FromToken:    TokenInfo{Address: "0xToken", Symbol: "T", Decimals: 18},
+				ToToken:      TokenInfo{Address: "0xOut", Symbol: "O", Decimals: 18},
+				AmountIn:     "100",
+				AmountOut:    "200",
+				MinAmountOut: "1",
+				Spender:      "0xspender",
+				ExpiresAt:    time.Unix(60, 0),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, created, err := repo.CreateOrder(StoredOrder{
+				QuoteID:       quote.ID,
+				WalletType:    WalletTypeExternal,
+				WalletAddress: "0xwallet",
+				ChainID:       quote.ChainID,
+				Status:        tt.status,
+				Spender:       quote.Spender,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !created {
+				t.Fatal("expected test order to be created")
+			}
+			if _, err := svc.Execute(context.Background(), quote.ID, "0xwallet", WalletTypeExternal); !errors.Is(err, ErrConflict) {
+				t.Fatalf("expected conflict, got %v", err)
+			}
+			if swapCalls != 0 {
+				t.Fatalf("expected conflicting order state to skip swap build, got %d calls", swapCalls)
+			}
+		})
 	}
 }
 

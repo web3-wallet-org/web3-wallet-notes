@@ -1,11 +1,15 @@
 package swap
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
-	"log"
+	"fmt"
 	"net/http"
-	"strings"
+
+	"github.com/gin-gonic/gin"
+
+	applog "github.com/web3-wallet-org/web3-wallet/src/swap/pkg/log"
 )
 
 // HTTPHandler 是薄薄的 HTTP 层，只负责：解析请求 → 调 Service → 写响应。
@@ -19,152 +23,164 @@ func NewHTTPHandler(service *Service) *HTTPHandler {
 }
 
 func (h *HTTPHandler) Routes() http.Handler {
-	mux := http.NewServeMux()
-	// Go 1.22+ ServeMux 支持 "METHOD /path" 格式，自动按 HTTP 方法路由
-	mux.HandleFunc("POST /swap/quote", h.handleQuote)            // 获取报价：返回成功 provider 候选列表和默认推荐 quoteId
-	mux.HandleFunc("POST /swap/allowance", h.handleAllowance)    // 检查授权：查链上 ERC20 allowance，native token 直接返回充足
-	mux.HandleFunc("POST /swap/approve-tx", h.handleApproveTx)   // 构造 approve 交易：allowance 不足时，生成待签名的 ERC20 approve tx
-	mux.HandleFunc("POST /swap/execute", h.handleExecute)        // 执行 swap：校验 quote 未过期 → 风控 → 构造 swap tx → 创建订单（SIGNING）
-	mux.HandleFunc("POST /swap/submit-hash", h.handleSubmitHash) // 提交 txHash：外部钱包广播后，把 txHash 告知后端以便 Monitor 轮询
-	mux.HandleFunc("GET /swap/status/", h.handleStatus)          // 查询订单状态：前端轮询，返回当前状态和 nextAction 指引；末尾 / 匹配 /{orderId}
-	mux.HandleFunc("GET /healthz", h.handleHealthz)              // 健康检查：供 load balancer / k8s 探针使用
-	return mux
+	r := gin.New()
+	r.Use(h.requestLogger()) // 注入 requestId/method/path 到 context
+	r.Use(gin.Recovery())    // panic → 500，防止进程崩溃
+
+	r.POST("/swap/quote", h.handleQuote)           // 获取报价
+	r.POST("/swap/allowance", h.handleAllowance)   // 检查授权
+	r.POST("/swap/approve-tx", h.handleApproveTx)  // 构造 approve 交易
+	r.POST("/swap/execute", h.handleExecute)        // 执行 swap
+	r.POST("/swap/submit-hash", h.handleSubmitHash) // 提交 txHash
+	r.GET("/swap/status/:orderId", h.handleStatus)  // 查询订单状态
+	r.GET("/healthz", h.handleHealthz)              // 健康检查
+	return r
 }
 
-func (h *HTTPHandler) handleQuote(w http.ResponseWriter, r *http.Request) {
+// requestLogger 为每个请求生成 requestId 并注入 context，
+// 使后续所有 applog.FromContext(ctx) 的日志都自动携带 requestId / method / path。
+func (h *HTTPHandler) requestLogger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		l := applog.FromContext(c.Request.Context()).With(
+			"requestId", newRequestID(),
+			"method", c.Request.Method,
+			"path", c.FullPath(),
+		)
+		c.Request = c.Request.WithContext(applog.WithContext(c.Request.Context(), l))
+		c.Next()
+	}
+}
+
+func newRequestID() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return fmt.Sprintf("%x", b)
+}
+
+func (h *HTTPHandler) handleQuote(c *gin.Context) {
 	var input QuoteInput
-	if err := readJSON(r, &input); err != nil {
-		writeError(w, err)
+	if err := bindJSON(c, &input); err != nil {
+		writeError(c, err)
 		return
 	}
-	out, err := h.service.Quote(r.Context(), input)
+	out, err := h.service.Quote(c.Request.Context(), input)
 	if err != nil {
-		writeError(w, err)
+		writeError(c, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	c.JSON(http.StatusOK, out)
 }
 
-func (h *HTTPHandler) handleAllowance(w http.ResponseWriter, r *http.Request) {
+func (h *HTTPHandler) handleAllowance(c *gin.Context) {
 	var req struct {
 		QuoteID       string `json:"quoteId"`
 		WalletAddress string `json:"walletAddress"`
 	}
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, err)
+	if err := bindJSON(c, &req); err != nil {
+		writeError(c, err)
 		return
 	}
-	out, err := h.service.Allowance(r.Context(), req.QuoteID, req.WalletAddress)
+	out, err := h.service.Allowance(c.Request.Context(), req.QuoteID, req.WalletAddress)
 	if err != nil {
-		writeError(w, err)
+		writeError(c, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	c.JSON(http.StatusOK, out)
 }
 
-func (h *HTTPHandler) handleApproveTx(w http.ResponseWriter, r *http.Request) {
+func (h *HTTPHandler) handleApproveTx(c *gin.Context) {
 	var req struct {
 		QuoteID       string `json:"quoteId"`
 		WalletAddress string `json:"walletAddress"`
 	}
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, err)
+	if err := bindJSON(c, &req); err != nil {
+		writeError(c, err)
 		return
 	}
-	out, err := h.service.ApproveTx(r.Context(), req.QuoteID, req.WalletAddress)
+	out, err := h.service.ApproveTx(c.Request.Context(), req.QuoteID, req.WalletAddress)
 	if err != nil {
-		writeError(w, err)
+		writeError(c, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	c.JSON(http.StatusOK, out)
 }
 
-func (h *HTTPHandler) handleExecute(w http.ResponseWriter, r *http.Request) {
+func (h *HTTPHandler) handleExecute(c *gin.Context) {
 	var req struct {
 		QuoteID       string     `json:"quoteId"`
 		WalletAddress string     `json:"walletAddress"`
 		WalletType    WalletType `json:"walletType"`
 	}
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, err)
+	if err := bindJSON(c, &req); err != nil {
+		writeError(c, err)
 		return
 	}
 	// walletType 缺省时视为外部钱包（MetaMask 等），兼容老客户端不传此字段的情况
 	if req.WalletType == "" {
 		req.WalletType = WalletTypeExternal
 	}
-	out, err := h.service.Execute(r.Context(), req.QuoteID, req.WalletAddress, req.WalletType)
+	out, err := h.service.Execute(c.Request.Context(), req.QuoteID, req.WalletAddress, req.WalletType)
 	if err != nil {
-		writeError(w, err)
+		writeError(c, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	c.JSON(http.StatusOK, out)
 }
 
-func (h *HTTPHandler) handleSubmitHash(w http.ResponseWriter, r *http.Request) {
+func (h *HTTPHandler) handleSubmitHash(c *gin.Context) {
 	var req SubmitHashRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, err)
+	if err := bindJSON(c, &req); err != nil {
+		writeError(c, err)
 		return
 	}
-	if err := h.service.SubmitHash(r.Context(), req); err != nil {
-		writeError(w, err)
+	if err := h.service.SubmitHash(c.Request.Context(), req); err != nil {
+		writeError(c, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-func (h *HTTPHandler) handleStatus(w http.ResponseWriter, r *http.Request) {
-	// ServeMux 匹配到前缀 /swap/status/，手动截取后面的 orderId
-	orderID := strings.TrimPrefix(r.URL.Path, "/swap/status/")
-	if orderID == "" {
-		writeError(w, invalidArgument("orderId is required"))
-		return
-	}
-	out, err := h.service.Status(r.Context(), orderID)
+func (h *HTTPHandler) handleStatus(c *gin.Context) {
+	orderID := c.Param("orderId")
+	out, err := h.service.Status(c.Request.Context(), orderID)
 	if err != nil {
-		writeError(w, err)
+		writeError(c, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	c.JSON(http.StatusOK, out)
 }
 
-func (h *HTTPHandler) handleHealthz(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+func (h *HTTPHandler) handleHealthz(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
 // ── HTTP 工具函数 ──────────────────────────────────────────────────────────────
 
-// readJSON 解析请求体为目标结构体。
+// bindJSON 解析请求体为目标结构体。
 // DisallowUnknownFields 确保客户端传了不认识的字段时直接报错，
 // 避免因字段名拼写错误导致参数被静默忽略。
-func readJSON(r *http.Request, out any) error {
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(out); err != nil {
+// Gin 默认不做此校验，这里手动用 json.Decoder 保持原有行为。
+func bindJSON(c *gin.Context, out any) error {
+	dec := json.NewDecoder(c.Request.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(out); err != nil {
 		return invalidArgument("invalid json: %v", err)
 	}
 	return nil
 }
 
-func writeJSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
-}
-
 // writeError 将内部错误转换为统一的 JSON 错误响应。
 // errors.As 优先匹配已经是 APIError 的情况（避免二次转换）；
 // 否则通过 apiError() 将业务错误（ErrNotFound、ErrConflict 等）映射到对应 HTTP 状态码。
-func writeError(w http.ResponseWriter, err error) {
+func writeError(c *gin.Context, err error) {
 	var api APIError
 	if errors.As(err, &api) {
-		writeJSON(w, api.HTTPStatus, api)
+		c.JSON(api.HTTPStatus, api)
 		return
 	}
 	api = apiError(err)
 	if api.HTTPStatus >= 500 {
-		log.Printf("INTERNAL_ERROR: %v", err)
+		applog.FromContext(c.Request.Context()).Errorw("INTERNAL_ERROR", "err", err)
 	}
-	writeJSON(w, api.HTTPStatus, api)
+	c.JSON(api.HTTPStatus, api)
 }

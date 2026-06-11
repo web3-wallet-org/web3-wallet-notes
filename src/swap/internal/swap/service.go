@@ -3,10 +3,11 @@ package swap
 import (
 	"context"
 	"fmt"
-	"log"
 	"sort"
 	"strings"
 	"time"
+
+	applog "github.com/web3-wallet-org/web3-wallet/src/swap/pkg/log"
 )
 
 // Service 是业务逻辑核心，所有 swap 流程都经过这里。
@@ -151,10 +152,12 @@ func (s *Service) Quote(ctx context.Context, input QuoteInput) (QuoteResponse, e
 	fromToken := s.cfg.Token(input.ChainID, input.FromToken)
 	toToken := s.cfg.Token(input.ChainID, input.ToToken)
 	pair := quotePair(fromToken, toToken)
-	log.Printf("QUOTE request chainId=%d providerFilter=%s userId=%s wallet=%s from=%s(%s) to=%s(%s) amountIn=%s slippageBps=%d",
-		input.ChainID, quoteProviderFilter(input.Provider), input.UserID, input.WalletAddress,
-		fromToken.Symbol, fromToken.Address, toToken.Symbol, toToken.Address,
-		input.AmountIn, input.SlippageBps)
+	applog.FromContext(ctx).Infow("QUOTE request",
+		"chainId", input.ChainID, "providerFilter", quoteProviderFilter(input.Provider),
+		"userId", input.UserID, "wallet", input.WalletAddress,
+		"fromSymbol", fromToken.Symbol, "fromAddress", fromToken.Address,
+		"toSymbol", toToken.Symbol, "toAddress", toToken.Address,
+		"amountIn", input.AmountIn, "slippageBps", input.SlippageBps)
 	var rawQuotes []NormalizedQuote
 	var errs []string
 	for _, provider := range providers {
@@ -163,8 +166,8 @@ func (s *Service) Quote(ctx context.Context, input QuoteInput) (QuoteResponse, e
 		}
 		quote, err := provider.GetQuote(input)
 		if err != nil {
-			log.Printf("QUOTE provider=%s chainId=%d pair=%s amountIn=%s err=%v",
-				provider.Name(), input.ChainID, pair, input.AmountIn, err)
+			applog.FromContext(ctx).Warnw("QUOTE provider failed",
+				"provider", provider.Name(), "chainId", input.ChainID, "pair", pair, "amountIn", input.AmountIn, "err", err)
 			errs = append(errs, fmt.Sprintf("%s: %v", provider.Name(), err))
 			continue // 单个 provider 失败不影响其他 provider
 		}
@@ -174,13 +177,15 @@ func (s *Service) Quote(ctx context.Context, input QuoteInput) (QuoteResponse, e
 		}
 		quote, err = s.resolveApprovalTarget(quote, provider)
 		if err != nil {
-			log.Printf("QUOTE provider=%s chainId=%d pair=%s amountIn=%s err=%v",
-				provider.Name(), input.ChainID, pair, input.AmountIn, err)
+			applog.FromContext(ctx).Warnw("QUOTE resolve approval target failed",
+				"provider", provider.Name(), "chainId", input.ChainID, "pair", pair, "amountIn", input.AmountIn, "err", err)
 			errs = append(errs, fmt.Sprintf("%s: %v", provider.Name(), err))
 			continue
 		}
-		log.Printf("QUOTE provider=%s chainId=%d pair=%s amountIn=%s amountOut=%s minAmountOut=%s gasUsd=%s spender=%s quoteId=%s",
-			provider.Name(), input.ChainID, pair, input.AmountIn, quote.AmountOut, quote.MinAmountOut, quote.GasUSD, quote.Spender, quote.ID)
+		applog.FromContext(ctx).Infow("QUOTE provider ok",
+			"provider", provider.Name(), "chainId", input.ChainID, "pair", pair,
+			"amountIn", input.AmountIn, "amountOut", quote.AmountOut, "minAmountOut", quote.MinAmountOut,
+			"gasUsd", quote.GasUSD, "spender", quote.Spender, "quoteId", quote.ID)
 		rawQuotes = append(rawQuotes, quote)
 		// 每个 provider 的原始报价单独落库，key 为随机 ID（不是 "最优报价" 的 ID）
 		if _, err := s.repo.SaveQuote(quote); err != nil {
@@ -197,8 +202,10 @@ func (s *Service) Quote(ctx context.Context, input QuoteInput) (QuoteResponse, e
 		return QuoteResponse{}, err
 	}
 	best := rawQuotes[0]
-	log.Printf("QUOTE selected=%s chainId=%d pair=%s amountIn=%s amountOut=%s minAmountOut=%s spender=%s quoteId=%s routes=%d",
-		best.Provider, input.ChainID, pair, input.AmountIn, best.AmountOut, best.MinAmountOut, best.Spender, best.ID, len(rawQuotes))
+	applog.FromContext(ctx).Infow("QUOTE selected",
+		"provider", best.Provider, "chainId", input.ChainID, "pair", pair,
+		"amountIn", input.AmountIn, "amountOut", best.AmountOut, "minAmountOut", best.MinAmountOut,
+		"spender", best.Spender, "quoteId", best.ID, "routes", len(rawQuotes))
 	// best 已经是已落库的候选 quote；旧顶层 quoteId 直接复用它的 ID。
 	saved := best
 	return QuoteResponse{
@@ -230,39 +237,46 @@ func (s *Service) Allowance(ctx context.Context, quoteID, walletAddress string) 
 	if strings.TrimSpace(walletAddress) == "" {
 		return AllowanceResponse{}, invalidArgument("walletAddress is required")
 	}
-	log.Printf("ALLOWANCE request quoteId=%s wallet=%s", quoteID, walletAddress)
+	applog.FromContext(ctx).Infow("ALLOWANCE request", "quoteId", quoteID, "wallet", walletAddress)
 	quote, err := s.repo.GetQuote(quoteID)
 	if err != nil {
-		log.Printf("ALLOWANCE quoteId=%s wallet=%s err=%v", quoteID, walletAddress, err)
+		applog.FromContext(ctx).Errorw("ALLOWANCE get quote failed", "quoteId", quoteID, "wallet", walletAddress, "err", err)
 		return AllowanceResponse{}, err
 	}
 	pair := quoteTokenPair(quote.FromToken, quote.ToToken)
 	if s.now().After(quote.ExpiresAt) {
-		log.Printf("ALLOWANCE provider=%s chainId=%d pair=%s amountIn=%s wallet=%s quoteId=%s err=%v",
-			quote.Provider, quote.ChainID, pair, quote.AmountIn, walletAddress, quote.ID, ErrQuoteExpired)
+		applog.FromContext(ctx).Warnw("ALLOWANCE quote expired",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "quoteId", quote.ID, "err", ErrQuoteExpired)
 		return AllowanceResponse{}, ErrQuoteExpired
 	}
 	// native token 无 ERC20 合约，不存在 allowance 概念，直接放行
 	if isNativeToken(quote.FromToken.Address) {
-		log.Printf("ALLOWANCE provider=%s chainId=%d pair=%s amountIn=%s wallet=%s spender=%s currentAllowance=%s allowanceEnough=%t quoteId=%s native=%t",
-			quote.Provider, quote.ChainID, pair, quote.AmountIn, walletAddress, quote.Spender, quote.AmountIn, true, quote.ID, true)
+		applog.FromContext(ctx).Infow("ALLOWANCE native token skip",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "quoteId", quote.ID,
+			"allowanceEnough", true, "native", true)
 		return AllowanceResponse{AllowanceEnough: true, Spender: quote.Spender, RequiredAmount: quote.AmountIn, CurrentAllowance: quote.AmountIn}, nil
 	}
 	quote, err = s.ensureApprovalTarget(quote)
 	if err != nil {
-		log.Printf("ALLOWANCE provider=%s chainId=%d pair=%s amountIn=%s wallet=%s quoteId=%s err=%v",
-			quote.Provider, quote.ChainID, pair, quote.AmountIn, walletAddress, quote.ID, err)
+		applog.FromContext(ctx).Errorw("ALLOWANCE ensure approval target failed",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "quoteId", quote.ID, "err", err)
 		return AllowanceResponse{}, err
 	}
 	current, err := s.rpc.GetAllowance(ctx, quote.ChainID, quote.FromToken.Address, walletAddress, quote.Spender)
 	if err != nil {
-		log.Printf("ALLOWANCE provider=%s chainId=%d pair=%s amountIn=%s wallet=%s spender=%s quoteId=%s err=%v",
-			quote.Provider, quote.ChainID, pair, quote.AmountIn, walletAddress, quote.Spender, quote.ID, err)
+		applog.FromContext(ctx).Errorw("ALLOWANCE get allowance failed",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "spender", quote.Spender, "quoteId", quote.ID, "err", err)
 		return AllowanceResponse{}, err
 	}
 	enough := decimalStringGreaterOrEqual(current, quote.AmountIn) // current >= amountIn 才算充足
-	log.Printf("ALLOWANCE provider=%s chainId=%d pair=%s amountIn=%s wallet=%s spender=%s currentAllowance=%s allowanceEnough=%t quoteId=%s native=%t",
-		quote.Provider, quote.ChainID, pair, quote.AmountIn, walletAddress, quote.Spender, current, enough, quote.ID, false)
+	applog.FromContext(ctx).Infow("ALLOWANCE checked",
+		"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+		"amountIn", quote.AmountIn, "wallet", walletAddress, "spender", quote.Spender,
+		"currentAllowance", current, "allowanceEnough", enough, "quoteId", quote.ID, "native", false)
 	return AllowanceResponse{
 		AllowanceEnough:  enough,
 		Spender:          quote.Spender,
@@ -281,44 +295,52 @@ func (s *Service) ApproveTx(ctx context.Context, quoteID, walletAddress string) 
 	if strings.TrimSpace(walletAddress) == "" {
 		return ApproveTxResponse{}, invalidArgument("walletAddress is required")
 	}
-	log.Printf("APPROVE_TX request quoteId=%s wallet=%s", quoteID, walletAddress)
+	applog.FromContext(ctx).Infow("APPROVE_TX request", "quoteId", quoteID, "wallet", walletAddress)
 	quote, err := s.repo.GetQuote(quoteID)
 	if err != nil {
-		log.Printf("APPROVE_TX quoteId=%s wallet=%s err=%v", quoteID, walletAddress, err)
+		applog.FromContext(ctx).Errorw("APPROVE_TX get quote failed", "quoteId", quoteID, "wallet", walletAddress, "err", err)
 		return ApproveTxResponse{}, err
 	}
 	pair := quoteTokenPair(quote.FromToken, quote.ToToken)
 	if s.now().After(quote.ExpiresAt) {
-		log.Printf("APPROVE_TX provider=%s chainId=%d pair=%s amountIn=%s wallet=%s quoteId=%s err=%v",
-			quote.Provider, quote.ChainID, pair, quote.AmountIn, walletAddress, quote.ID, ErrQuoteExpired)
+		applog.FromContext(ctx).Warnw("APPROVE_TX quote expired",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "quoteId", quote.ID, "err", ErrQuoteExpired)
 		return ApproveTxResponse{}, ErrQuoteExpired
 	}
 	if isNativeToken(quote.FromToken.Address) {
 		err := invalidArgument("native token does not require approve")
-		log.Printf("APPROVE_TX provider=%s chainId=%d pair=%s amountIn=%s wallet=%s quoteId=%s err=%v",
-			quote.Provider, quote.ChainID, pair, quote.AmountIn, walletAddress, quote.ID, err)
+		applog.FromContext(ctx).Warnw("APPROVE_TX native token rejected",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "quoteId", quote.ID, "err", err)
 		return ApproveTxResponse{}, err
 	}
 	quote, err = s.ensureApprovalTarget(quote)
 	if err != nil {
-		log.Printf("APPROVE_TX provider=%s chainId=%d pair=%s amountIn=%s wallet=%s quoteId=%s err=%v",
-			quote.Provider, quote.ChainID, pair, quote.AmountIn, walletAddress, quote.ID, err)
+		applog.FromContext(ctx).Errorw("APPROVE_TX ensure approval target failed",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "quoteId", quote.ID, "err", err)
 		return ApproveTxResponse{}, err
 	}
 	provider, err := s.provider(quote.Provider)
 	if err != nil {
-		log.Printf("APPROVE_TX provider=%s chainId=%d pair=%s amountIn=%s wallet=%s spender=%s quoteId=%s err=%v",
-			quote.Provider, quote.ChainID, pair, quote.AmountIn, walletAddress, quote.Spender, quote.ID, err)
+		applog.FromContext(ctx).Errorw("APPROVE_TX provider not found",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "spender", quote.Spender, "quoteId", quote.ID, "err", err)
 		return ApproveTxResponse{}, err
 	}
 	env, err := provider.BuildApproveTx(quote, walletAddress)
 	if err != nil {
-		log.Printf("APPROVE_TX provider=%s chainId=%d pair=%s amountIn=%s wallet=%s spender=%s token=%s quoteId=%s err=%v",
-			quote.Provider, quote.ChainID, pair, quote.AmountIn, walletAddress, quote.Spender, quote.FromToken.Address, quote.ID, err)
+		applog.FromContext(ctx).Errorw("APPROVE_TX build failed",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "spender", quote.Spender,
+			"token", quote.FromToken.Address, "quoteId", quote.ID, "err", err)
 		return ApproveTxResponse{}, err
 	}
-	log.Printf("APPROVE_TX provider=%s chainId=%d pair=%s amountIn=%s wallet=%s spender=%s token=%s txTo=%s gasType=%s gasLimit=%s quoteId=%s",
-		quote.Provider, quote.ChainID, pair, quote.AmountIn, walletAddress, quote.Spender, quote.FromToken.Address, env.To, env.GasType, env.GasLimit, quote.ID)
+	applog.FromContext(ctx).Infow("APPROVE_TX ok",
+		"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+		"amountIn", quote.AmountIn, "wallet", walletAddress, "spender", quote.Spender,
+		"token", quote.FromToken.Address, "txTo", env.To, "gasType", env.GasType, "gasLimit", env.GasLimit, "quoteId", quote.ID)
 	return ApproveTxResponse{
 		GasType:              env.GasType,
 		ChainID:              env.ChainID,
@@ -339,31 +361,75 @@ func (s *Service) ApproveTx(ctx context.Context, quoteID, walletAddress string) 
 //  4. 幂等处理：同一 quoteId 若已有订单，根据订单状态决定是复用还是拒绝
 //  5. 构造 swap 交易并创建订单（状态 SIGNING）
 func (s *Service) Execute(ctx context.Context, quoteID, walletAddress string, walletType WalletType) (ExecuteResponse, error) {
+	if strings.TrimSpace(quoteID) == "" {
+		return ExecuteResponse{}, invalidArgument("quoteId is required")
+	}
+	if strings.TrimSpace(walletAddress) == "" {
+		return ExecuteResponse{}, invalidArgument("walletAddress is required")
+	}
+	if !validWalletType(walletType) {
+		return ExecuteResponse{}, invalidArgument("walletType must be external, custody, or mpc")
+	}
+	applog.FromContext(ctx).Infow("EXECUTE request", "quoteId", quoteID, "wallet", walletAddress, "walletType", walletType)
+
 	quote, err := s.repo.GetQuote(quoteID)
 	if err != nil {
+		applog.FromContext(ctx).Errorw("EXECUTE get quote failed", "quoteId", quoteID, "wallet", walletAddress, "walletType", walletType, "err", err)
 		return ExecuteResponse{}, err
 	}
+	pair := quoteTokenPair(quote.FromToken, quote.ToToken)
 	if s.now().After(quote.ExpiresAt) {
+		applog.FromContext(ctx).Warnw("EXECUTE quote expired",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType, "quoteId", quote.ID, "err", ErrQuoteExpired)
 		return ExecuteResponse{}, ErrQuoteExpired
 	}
 	provider, err := s.provider(quote.Provider)
 	if err != nil {
+		applog.FromContext(ctx).Errorw("EXECUTE provider not found",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType, "quoteId", quote.ID, "err", err)
 		return ExecuteResponse{}, err
 	}
 	if isNativeToken(quote.FromToken.Address) == false {
 		quote, err = s.ensureApprovalTarget(quote)
 		if err != nil {
+			applog.FromContext(ctx).Errorw("EXECUTE ensure approval target failed",
+				"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+				"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType, "quoteId", quote.ID, "err", err)
 			return ExecuteResponse{}, err
 		}
 		allowance, err := s.rpc.GetAllowance(ctx, quote.ChainID, quote.FromToken.Address, walletAddress, quote.Spender)
 		if err != nil {
+			applog.FromContext(ctx).Errorw("EXECUTE get allowance failed",
+				"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+				"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+				"spender", quote.Spender, "quoteId", quote.ID, "err", err)
 			return ExecuteResponse{}, err
 		}
 		if !decimalStringGreaterOrEqual(allowance, quote.AmountIn) {
-			return ExecuteResponse{}, fmt.Errorf("%w: allowance不足", ErrInvalidArgument)
+			err := fmt.Errorf("%w: allowance insufficient", ErrInvalidArgument)
+			applog.FromContext(ctx).Warnw("EXECUTE allowance insufficient",
+				"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+				"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+				"spender", quote.Spender, "currentAllowance", allowance, "allowanceEnough", false, "quoteId", quote.ID, "err", err)
+			return ExecuteResponse{}, err
 		}
+		applog.FromContext(ctx).Infow("EXECUTE allowance ok",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+			"spender", quote.Spender, "currentAllowance", allowance, "allowanceEnough", true, "quoteId", quote.ID, "native", false)
+	} else {
+		applog.FromContext(ctx).Infow("EXECUTE allowance skipped",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+			"quoteId", quote.ID, "native", true)
 	}
 	if !s.validateRisk(quote) {
+		applog.FromContext(ctx).Warnw("EXECUTE risk blocked",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+			"spender", quote.Spender, "quoteId", quote.ID, "err", ErrRiskBlocked)
 		return ExecuteResponse{}, ErrRiskBlocked
 	}
 	// ── 幂等处理 ────────────────────────────────────────────────────────────────
@@ -376,6 +442,10 @@ func (s *Service) Execute(ctx context.Context, quoteID, walletAddress string, wa
 			// quote 未过期但订单已存在且还没签名 → 重新构造交易体（gas 刷新），复用 orderId
 			swapTx, err := provider.BuildSwapTx(quote, walletAddress)
 			if err != nil {
+				applog.FromContext(ctx).Errorw("EXECUTE rebuild swap tx failed",
+					"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+					"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+					"spender", quote.Spender, "quoteId", quote.ID, "orderId", existingOrder.ID, "status", existingOrder.Status, "err", err)
 				return ExecuteResponse{}, err
 			}
 			existingOrder.TxPayload = swapTx
@@ -383,26 +453,59 @@ func (s *Service) Execute(ctx context.Context, quoteID, walletAddress string, wa
 			existingOrder.WalletType = walletType
 			existingOrder.WalletAddress = walletAddress
 			if err := s.repo.UpdateOrder(existingOrder); err != nil {
+				applog.FromContext(ctx).Errorw("EXECUTE update order failed",
+					"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+					"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+					"spender", quote.Spender, "quoteId", quote.ID, "orderId", existingOrder.ID, "status", existingOrder.Status, "err", err)
 				return ExecuteResponse{}, err
 			}
 			if err := s.repo.AddEvent(SwapEvent{OrderID: existingOrder.ID, Status: OrderStatusSigning, Message: "order rebuilt"}); err != nil {
+				applog.FromContext(ctx).Errorw("EXECUTE add event failed",
+					"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+					"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+					"spender", quote.Spender, "quoteId", quote.ID, "orderId", existingOrder.ID, "status", existingOrder.Status, "err", err)
 				return ExecuteResponse{}, err
 			}
+			applog.FromContext(ctx).Infow("EXECUTE rebuilt",
+				"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+				"amountIn", quote.AmountIn, "amountOut", quote.AmountOut, "minAmountOut", quote.MinAmountOut,
+				"wallet", walletAddress, "walletType", walletType, "spender", quote.Spender,
+				"txTo", swapTx.To, "gasType", swapTx.GasType, "gasLimit", swapTx.GasLimit,
+				"quoteId", quote.ID, "orderId", existingOrder.ID, "status", OrderStatusSigning, "rebuilt", true)
 			return ExecuteResponse{OrderID: existingOrder.ID, GasType: swapTx.GasType, Transaction: swapTx}, nil
 		case OrderStatusBroadcasting, OrderStatusTxHashReceived, OrderStatusTxPending:
 			// 交易已在链上流转，拒绝重复提交
-			return ExecuteResponse{}, fmt.Errorf("%w: order already in progress", ErrConflict)
+			err := fmt.Errorf("%w: order already in progress", ErrConflict)
+			applog.FromContext(ctx).Warnw("EXECUTE order in progress",
+				"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+				"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+				"spender", quote.Spender, "quoteId", quote.ID, "orderId", existingOrder.ID, "status", existingOrder.Status, "err", err)
+			return ExecuteResponse{}, err
 		case OrderStatusSigningTimeout, OrderStatusAwaitingTxHashTimeout, OrderStatusTxFailed, OrderStatusBroadcastFailed:
 			// 可恢复终态，但必须重新 quote，不能复用旧 quoteId
-			return ExecuteResponse{}, fmt.Errorf("%w: order already failed, re-quote required", ErrConflict)
+			err := fmt.Errorf("%w: order already failed, re-quote required", ErrConflict)
+			applog.FromContext(ctx).Warnw("EXECUTE order failed state",
+				"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+				"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+				"spender", quote.Spender, "quoteId", quote.ID, "orderId", existingOrder.ID, "status", existingOrder.Status, "err", err)
+			return ExecuteResponse{}, err
 		case OrderStatusCompleted, OrderStatusTxConfirmed:
 			// 已完成，同一 quote 不能再次执行
-			return ExecuteResponse{}, fmt.Errorf("%w: order already completed", ErrConflict)
+			err := fmt.Errorf("%w: order already completed", ErrConflict)
+			applog.FromContext(ctx).Warnw("EXECUTE order completed",
+				"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+				"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+				"spender", quote.Spender, "quoteId", quote.ID, "orderId", existingOrder.ID, "status", existingOrder.Status, "err", err)
+			return ExecuteResponse{}, err
 		}
 	}
 
 	swapTx, err := provider.BuildSwapTx(quote, walletAddress)
 	if err != nil {
+		applog.FromContext(ctx).Errorw("EXECUTE build swap tx failed",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+			"spender", quote.Spender, "quoteId", quote.ID, "err", err)
 		return ExecuteResponse{}, err
 	}
 	// CreateOrder 内部做并发安全的幂等插入（INSERT ON CONFLICT DO NOTHING）；
@@ -420,14 +523,36 @@ func (s *Service) Execute(ctx context.Context, quoteID, walletAddress string, wa
 		TxPayload:     swapTx,
 	})
 	if err != nil {
+		applog.FromContext(ctx).Errorw("EXECUTE create order failed",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+			"spender", quote.Spender, "txTo", swapTx.To, "gasType", swapTx.GasType, "gasLimit", swapTx.GasLimit,
+			"quoteId", quote.ID, "err", err)
 		return ExecuteResponse{}, err
 	}
 	if !created {
-		return ExecuteResponse{}, fmt.Errorf("%w: order already exists", ErrConflict)
-	}
-	if err := s.repo.AddEvent(SwapEvent{OrderID: order.ID, Status: OrderStatusSigning, Message: "order created"}); err != nil {
+		err := fmt.Errorf("%w: order already exists", ErrConflict)
+		applog.FromContext(ctx).Warnw("EXECUTE order already exists",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+			"spender", quote.Spender, "txTo", swapTx.To, "gasType", swapTx.GasType, "gasLimit", swapTx.GasLimit,
+			"quoteId", quote.ID, "orderId", order.ID, "status", order.Status, "err", err)
 		return ExecuteResponse{}, err
 	}
+	if err := s.repo.AddEvent(SwapEvent{OrderID: order.ID, Status: OrderStatusSigning, Message: "order created"}); err != nil {
+		applog.FromContext(ctx).Errorw("EXECUTE add event failed",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+			"spender", quote.Spender, "txTo", swapTx.To, "gasType", swapTx.GasType, "gasLimit", swapTx.GasLimit,
+			"quoteId", quote.ID, "orderId", order.ID, "status", order.Status, "err", err)
+		return ExecuteResponse{}, err
+	}
+	applog.FromContext(ctx).Infow("EXECUTE created",
+		"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+		"amountIn", quote.AmountIn, "amountOut", quote.AmountOut, "minAmountOut", quote.MinAmountOut,
+		"wallet", walletAddress, "walletType", walletType, "spender", quote.Spender,
+		"txTo", swapTx.To, "gasType", swapTx.GasType, "gasLimit", swapTx.GasLimit,
+		"quoteId", quote.ID, "orderId", order.ID, "status", OrderStatusSigning, "created", true)
 	return ExecuteResponse{
 		OrderID:     order.ID,
 		GasType:     swapTx.GasType,
@@ -583,6 +708,15 @@ func quoteProviderFilter(provider string) string {
 		return "all"
 	}
 	return strings.ToLower(provider)
+}
+
+func validWalletType(walletType WalletType) bool {
+	switch walletType {
+	case WalletTypeExternal, WalletTypeCustody, WalletTypeMPC:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) resolveApprovalTarget(quote NormalizedQuote, provider QuoteProvider) (NormalizedQuote, error) {
