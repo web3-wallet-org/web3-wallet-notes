@@ -116,6 +116,9 @@ func decimalize(value string) string {
 	return value
 }
 
+// encodeApproveCalldata 手动 ABI 编码 ERC20 approve(address,uint256)。
+// 0x095ea7b3 = keccak256("approve(address,uint256)") 前 4 字节（函数选择器）。
+// 后跟 spender 和 amount 各左补零至 32 字节，共 68 字节。
 func encodeApproveCalldata(spender, amount string) string {
 	return "0x095ea7b3" + leftPadHexNoPrefix(strip0x(spender)) + leftPadDecimalNoPrefix(amount)
 }

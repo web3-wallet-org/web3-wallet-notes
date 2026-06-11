@@ -285,10 +285,9 @@ func (s *Service) Allowance(ctx context.Context, quoteID, walletAddress string) 
 	}, nil
 }
 
-// ApproveTx 由 provider 构造 approve 交易（而非本地手写 calldata），
-// 因为不同 provider 的 spender 地址不同（0x 有 AllowanceHolder/Permit2 两种模式），
-// spender 必须来自 provider 当前响应，不能硬编码。
+// ApproveTx 由 provider 构造 approve calldata；spender 因 provider 而异（0x 有 AllowanceHolder/Permit2），不能硬编码。
 func (s *Service) ApproveTx(ctx context.Context, quoteID, walletAddress string) (ApproveTxResponse, error) {
+	// spender/token/amount 以后端 quote 为准，防前端篡改。
 	if strings.TrimSpace(quoteID) == "" {
 		return ApproveTxResponse{}, invalidArgument("quoteId is required")
 	}
@@ -296,18 +295,23 @@ func (s *Service) ApproveTx(ctx context.Context, quoteID, walletAddress string) 
 		return ApproveTxResponse{}, invalidArgument("walletAddress is required")
 	}
 	applog.FromContext(ctx).Infow("APPROVE_TX request", "quoteId", quoteID, "wallet", walletAddress)
+
 	quote, err := s.repo.GetQuote(quoteID)
 	if err != nil {
 		applog.FromContext(ctx).Errorw("APPROVE_TX get quote failed", "quoteId", quoteID, "wallet", walletAddress, "err", err)
 		return ApproveTxResponse{}, err
 	}
 	pair := quoteTokenPair(quote.FromToken, quote.ToToken)
+
+	// quote 过期则链上价格已偏移，approve 后无法 execute。
 	if s.now().After(quote.ExpiresAt) {
 		applog.FromContext(ctx).Warnw("APPROVE_TX quote expired",
 			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
 			"amountIn", quote.AmountIn, "wallet", walletAddress, "quoteId", quote.ID, "err", ErrQuoteExpired)
 		return ApproveTxResponse{}, ErrQuoteExpired
 	}
+
+	// native token 无 ERC20 合约，不存在 approve。
 	if isNativeToken(quote.FromToken.Address) {
 		err := invalidArgument("native token does not require approve")
 		applog.FromContext(ctx).Warnw("APPROVE_TX native token rejected",
@@ -315,6 +319,8 @@ func (s *Service) ApproveTx(ctx context.Context, quoteID, walletAddress string) 
 			"amountIn", quote.AmountIn, "wallet", walletAddress, "quoteId", quote.ID, "err", err)
 		return ApproveTxResponse{}, err
 	}
+
+	// 1inch 等 provider 的 spender 在 quote 阶段可能未返回，此处懒加载并缓存。
 	quote, err = s.ensureApprovalTarget(quote)
 	if err != nil {
 		applog.FromContext(ctx).Errorw("APPROVE_TX ensure approval target failed",
@@ -322,6 +328,7 @@ func (s *Service) ApproveTx(ctx context.Context, quoteID, walletAddress string) 
 			"amountIn", quote.AmountIn, "wallet", walletAddress, "quoteId", quote.ID, "err", err)
 		return ApproveTxResponse{}, err
 	}
+
 	provider, err := s.provider(quote.Provider)
 	if err != nil {
 		applog.FromContext(ctx).Errorw("APPROVE_TX provider not found",
@@ -329,6 +336,8 @@ func (s *Service) ApproveTx(ctx context.Context, quoteID, walletAddress string) 
 			"amountIn", quote.AmountIn, "wallet", walletAddress, "spender", quote.Spender, "quoteId", quote.ID, "err", err)
 		return ApproveTxResponse{}, err
 	}
+
+	// 只构造 calldata，不检查 allowance 也不落库；前端签名后自行广播。
 	env, err := provider.BuildApproveTx(quote, walletAddress)
 	if err != nil {
 		applog.FromContext(ctx).Errorw("APPROVE_TX build failed",
@@ -341,6 +350,8 @@ func (s *Service) ApproveTx(ctx context.Context, quoteID, walletAddress string) 
 		"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
 		"amountIn", quote.AmountIn, "wallet", walletAddress, "spender", quote.Spender,
 		"token", quote.FromToken.Address, "txTo", env.To, "gasType", env.GasType, "gasLimit", env.GasLimit, "quoteId", quote.ID)
+
+	// to=token 合约地址，data=approve(spender,amountIn) calldata，value=0。
 	return ApproveTxResponse{
 		GasType:              env.GasType,
 		ChainID:              env.ChainID,
