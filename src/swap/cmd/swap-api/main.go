@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 
@@ -86,6 +87,7 @@ func main() {
 	}
 	defer logger.Sync()
 	applog.Init(logger)
+	gin.SetMode(gin.DebugMode)
 
 	appCfg := loadConfig(*configPath)
 	cfg := buildSwapConfig(appCfg)
