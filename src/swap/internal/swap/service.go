@@ -36,7 +36,7 @@ func NewService(cfg Config, repo Repository, rpc ChainClient, providers []QuoteP
 	}
 }
 
-// ── 响应结构体 ─────────────────────────────────────────────────────────────────
+// 响应结构体
 
 type QuoteResponse struct {
 	QuoteID            string                `json:"quoteId"`
@@ -127,7 +127,7 @@ type SubmitHashRequest struct {
 	TxHash  string `json:"txHash"`
 }
 
-// ── 核心业务方法 ───────────────────────────────────────────────────────────────
+// 核心业务方法
 
 // provider 按名字查找 QuoteProvider，name 统一小写匹配。
 func (s *Service) provider(name string) (QuoteProvider, error) {
@@ -372,6 +372,7 @@ func (s *Service) ApproveTx(ctx context.Context, quoteID, walletAddress string) 
 //  4. 幂等处理：同一 quoteId 若已有订单，根据订单状态决定是复用还是拒绝
 //  5. 构造 swap 交易并创建订单（状态 SIGNING）
 func (s *Service) Execute(ctx context.Context, quoteID, walletAddress string, walletType WalletType) (ExecuteResponse, error) {
+	// 参数校验
 	if strings.TrimSpace(quoteID) == "" {
 		return ExecuteResponse{}, invalidArgument("quoteId is required")
 	}
@@ -383,6 +384,7 @@ func (s *Service) Execute(ctx context.Context, quoteID, walletAddress string, wa
 	}
 	applog.FromContext(ctx).Infow("EXECUTE request", "quoteId", quoteID, "wallet", walletAddress, "walletType", walletType)
 
+	// 1. 加载 quote，验过期
 	quote, err := s.repo.GetQuote(quoteID)
 	if err != nil {
 		applog.FromContext(ctx).Errorw("EXECUTE get quote failed", "quoteId", quoteID, "wallet", walletAddress, "walletType", walletType, "err", err)
@@ -395,6 +397,8 @@ func (s *Service) Execute(ctx context.Context, quoteID, walletAddress string, wa
 			"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType, "quoteId", quote.ID, "err", ErrQuoteExpired)
 		return ExecuteResponse{}, ErrQuoteExpired
 	}
+
+	// 2. 验 provider（短路优于后续 RPC 调用）
 	provider, err := s.provider(quote.Provider)
 	if err != nil {
 		applog.FromContext(ctx).Errorw("EXECUTE provider not found",
@@ -402,40 +406,14 @@ func (s *Service) Execute(ctx context.Context, quoteID, walletAddress string, wa
 			"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType, "quoteId", quote.ID, "err", err)
 		return ExecuteResponse{}, err
 	}
-	if isNativeToken(quote.FromToken.Address) == false {
-		quote, err = s.ensureApprovalTarget(quote)
-		if err != nil {
-			applog.FromContext(ctx).Errorw("EXECUTE ensure approval target failed",
-				"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
-				"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType, "quoteId", quote.ID, "err", err)
-			return ExecuteResponse{}, err
-		}
-		allowance, err := s.rpc.GetAllowance(ctx, quote.ChainID, quote.FromToken.Address, walletAddress, quote.Spender)
-		if err != nil {
-			applog.FromContext(ctx).Errorw("EXECUTE get allowance failed",
-				"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
-				"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
-				"spender", quote.Spender, "quoteId", quote.ID, "err", err)
-			return ExecuteResponse{}, err
-		}
-		if !decimalStringGreaterOrEqual(allowance, quote.AmountIn) {
-			err := fmt.Errorf("%w: allowance insufficient", ErrInvalidArgument)
-			applog.FromContext(ctx).Warnw("EXECUTE allowance insufficient",
-				"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
-				"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
-				"spender", quote.Spender, "currentAllowance", allowance, "allowanceEnough", false, "quoteId", quote.ID, "err", err)
-			return ExecuteResponse{}, err
-		}
-		applog.FromContext(ctx).Infow("EXECUTE allowance ok",
-			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
-			"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
-			"spender", quote.Spender, "currentAllowance", allowance, "allowanceEnough", true, "quoteId", quote.ID, "native", false)
-	} else {
-		applog.FromContext(ctx).Infow("EXECUTE allowance skipped",
-			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
-			"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
-			"quoteId", quote.ID, "native", true)
+
+	// 3. 验 allowance（/execute 独立校验，不信任前端 /allowance 预检结果）
+	quote, err = s.executeCheckAllowance(ctx, quote, walletAddress, walletType)
+	if err != nil {
+		return ExecuteResponse{}, err
 	}
+
+	// 4. 风控
 	if !s.validateRisk(quote) {
 		applog.FromContext(ctx).Warnw("EXECUTE risk blocked",
 			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
@@ -443,74 +421,134 @@ func (s *Service) Execute(ctx context.Context, quoteID, walletAddress string, wa
 			"spender", quote.Spender, "quoteId", quote.ID, "err", ErrRiskBlocked)
 		return ExecuteResponse{}, ErrRiskBlocked
 	}
-	// ── 幂等处理 ────────────────────────────────────────────────────────────────
-	// 同一 quoteId 只允许存在一个 swap_order。
-	// SIGNING 状态可以重建交易体（旧 gas 可能过期）；其他状态一律拒绝重复提交。
-	existingOrder, err := s.repo.GetOrderByQuoteID(quote.ID)
-	if err == nil {
-		switch existingOrder.Status {
-		case OrderStatusSigning:
-			// quote 未过期但订单已存在且还没签名 → 重新构造交易体（gas 刷新），复用 orderId
-			swapTx, err := provider.BuildSwapTx(quote, walletAddress)
-			if err != nil {
-				applog.FromContext(ctx).Errorw("EXECUTE rebuild swap tx failed",
-					"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
-					"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
-					"spender", quote.Spender, "quoteId", quote.ID, "orderId", existingOrder.ID, "status", existingOrder.Status, "err", err)
-				return ExecuteResponse{}, err
-			}
-			existingOrder.TxPayload = swapTx
-			existingOrder.GasType = swapTx.GasType
-			existingOrder.WalletType = walletType
-			existingOrder.WalletAddress = walletAddress
-			if err := s.repo.UpdateOrder(existingOrder); err != nil {
-				applog.FromContext(ctx).Errorw("EXECUTE update order failed",
-					"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
-					"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
-					"spender", quote.Spender, "quoteId", quote.ID, "orderId", existingOrder.ID, "status", existingOrder.Status, "err", err)
-				return ExecuteResponse{}, err
-			}
-			if err := s.repo.AddEvent(SwapEvent{OrderID: existingOrder.ID, Status: OrderStatusSigning, Message: "order rebuilt"}); err != nil {
-				applog.FromContext(ctx).Errorw("EXECUTE add event failed",
-					"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
-					"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
-					"spender", quote.Spender, "quoteId", quote.ID, "orderId", existingOrder.ID, "status", existingOrder.Status, "err", err)
-				return ExecuteResponse{}, err
-			}
-			applog.FromContext(ctx).Infow("EXECUTE rebuilt",
-				"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
-				"amountIn", quote.AmountIn, "amountOut", quote.AmountOut, "minAmountOut", quote.MinAmountOut,
-				"wallet", walletAddress, "walletType", walletType, "spender", quote.Spender,
-				"txTo", swapTx.To, "gasType", swapTx.GasType, "gasLimit", swapTx.GasLimit,
-				"quoteId", quote.ID, "orderId", existingOrder.ID, "status", OrderStatusSigning, "rebuilt", true)
-			return ExecuteResponse{OrderID: existingOrder.ID, GasType: swapTx.GasType, Transaction: swapTx}, nil
-		case OrderStatusBroadcasting, OrderStatusTxHashReceived, OrderStatusTxPending:
-			// 交易已在链上流转，拒绝重复提交
-			err := fmt.Errorf("%w: order already in progress", ErrConflict)
-			applog.FromContext(ctx).Warnw("EXECUTE order in progress",
-				"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
-				"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
-				"spender", quote.Spender, "quoteId", quote.ID, "orderId", existingOrder.ID, "status", existingOrder.Status, "err", err)
-			return ExecuteResponse{}, err
-		case OrderStatusSigningTimeout, OrderStatusAwaitingTxHashTimeout, OrderStatusTxFailed, OrderStatusBroadcastFailed:
-			// 可恢复终态，但必须重新 quote，不能复用旧 quoteId
-			err := fmt.Errorf("%w: order already failed, re-quote required", ErrConflict)
-			applog.FromContext(ctx).Warnw("EXECUTE order failed state",
-				"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
-				"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
-				"spender", quote.Spender, "quoteId", quote.ID, "orderId", existingOrder.ID, "status", existingOrder.Status, "err", err)
-			return ExecuteResponse{}, err
-		case OrderStatusCompleted, OrderStatusTxConfirmed:
-			// 已完成，同一 quote 不能再次执行
-			err := fmt.Errorf("%w: order already completed", ErrConflict)
-			applog.FromContext(ctx).Warnw("EXECUTE order completed",
-				"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
-				"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
-				"spender", quote.Spender, "quoteId", quote.ID, "orderId", existingOrder.ID, "status", existingOrder.Status, "err", err)
-			return ExecuteResponse{}, err
+
+	// 5. 幂等：同 quoteId 已有订单，按状态决定复用或拒绝
+	if existingOrder, err := s.repo.GetOrderByQuoteID(quote.ID); err == nil {
+		resp, handled, err := s.executeHandleExisting(ctx, provider, quote, existingOrder, walletAddress, walletType)
+		if handled {
+			return resp, err
 		}
 	}
 
+	// 6. 构造 swap 交易，创建新订单
+	return s.executeNewOrder(ctx, provider, quote, walletAddress, walletType)
+}
+
+// executeCheckAllowance 校验链上 allowance 是否充足。
+// 返回更新后的 quote（Spender 可能在此首次解析并缓存到 repo）。
+func (s *Service) executeCheckAllowance(ctx context.Context, quote NormalizedQuote, walletAddress string, walletType WalletType) (NormalizedQuote, error) {
+	pair := quoteTokenPair(quote.FromToken, quote.ToToken)
+	if isNativeToken(quote.FromToken.Address) {
+		applog.FromContext(ctx).Infow("EXECUTE allowance skipped",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+			"quoteId", quote.ID, "native", true)
+		return quote, nil
+	}
+	var err error
+	quote, err = s.ensureApprovalTarget(quote)
+	if err != nil {
+		applog.FromContext(ctx).Errorw("EXECUTE ensure approval target failed",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType, "quoteId", quote.ID, "err", err)
+		return NormalizedQuote{}, err
+	}
+	allowance, err := s.rpc.GetAllowance(ctx, quote.ChainID, quote.FromToken.Address, walletAddress, quote.Spender)
+	if err != nil {
+		applog.FromContext(ctx).Errorw("EXECUTE get allowance failed",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+			"spender", quote.Spender, "quoteId", quote.ID, "err", err)
+		return NormalizedQuote{}, err
+	}
+	if !decimalStringGreaterOrEqual(allowance, quote.AmountIn) {
+		err := fmt.Errorf("%w: allowance insufficient", ErrInvalidArgument)
+		applog.FromContext(ctx).Warnw("EXECUTE allowance insufficient",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+			"spender", quote.Spender, "currentAllowance", allowance, "allowanceEnough", false, "quoteId", quote.ID, "err", err)
+		return NormalizedQuote{}, err
+	}
+	applog.FromContext(ctx).Infow("EXECUTE allowance ok",
+		"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+		"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+		"spender", quote.Spender, "currentAllowance", allowance, "allowanceEnough", true, "quoteId", quote.ID, "native", false)
+	return quote, nil
+}
+
+// executeHandleExisting 处理同一 quoteId 已存在订单时的幂等逻辑。
+// handled=true 表示已处理完毕，调用方直接返回；false 表示继续走创建新订单流程。
+func (s *Service) executeHandleExisting(ctx context.Context, provider QuoteProvider, quote NormalizedQuote, existingOrder StoredOrder, walletAddress string, walletType WalletType) (ExecuteResponse, bool, error) {
+	pair := quoteTokenPair(quote.FromToken, quote.ToToken)
+	switch existingOrder.Status {
+	case OrderStatusSigning:
+		// quote 未过期但订单已存在且还没签名 → 重新构造交易体（gas 刷新），复用 orderId
+		swapTx, err := provider.BuildSwapTx(quote, walletAddress)
+		if err != nil {
+			applog.FromContext(ctx).Errorw("EXECUTE rebuild swap tx failed",
+				"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+				"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+				"spender", quote.Spender, "quoteId", quote.ID, "orderId", existingOrder.ID, "status", existingOrder.Status, "err", err)
+			return ExecuteResponse{}, true, err
+		}
+		existingOrder.TxPayload = swapTx
+		existingOrder.GasType = swapTx.GasType
+		existingOrder.WalletType = walletType
+		existingOrder.WalletAddress = walletAddress
+		if err := s.repo.UpdateOrder(existingOrder); err != nil {
+			applog.FromContext(ctx).Errorw("EXECUTE update order failed",
+				"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+				"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+				"spender", quote.Spender, "quoteId", quote.ID, "orderId", existingOrder.ID, "status", existingOrder.Status, "err", err)
+			return ExecuteResponse{}, true, err
+		}
+		if err := s.repo.AddEvent(SwapEvent{OrderID: existingOrder.ID, Status: OrderStatusSigning, Message: "order rebuilt"}); err != nil {
+			applog.FromContext(ctx).Errorw("EXECUTE add event failed",
+				"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+				"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+				"spender", quote.Spender, "quoteId", quote.ID, "orderId", existingOrder.ID, "status", existingOrder.Status, "err", err)
+			return ExecuteResponse{}, true, err
+		}
+		applog.FromContext(ctx).Infow("EXECUTE rebuilt",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "amountOut", quote.AmountOut, "minAmountOut", quote.MinAmountOut,
+			"wallet", walletAddress, "walletType", walletType, "spender", quote.Spender,
+			"txTo", swapTx.To, "gasType", swapTx.GasType, "gasLimit", swapTx.GasLimit,
+			"quoteId", quote.ID, "orderId", existingOrder.ID, "status", OrderStatusSigning, "rebuilt", true)
+		return ExecuteResponse{OrderID: existingOrder.ID, GasType: swapTx.GasType, Transaction: swapTx}, true, nil
+	case OrderStatusBroadcasting, OrderStatusTxHashReceived, OrderStatusTxPending:
+		// 交易已在链上流转，拒绝重复提交
+		err := fmt.Errorf("%w: order already in progress", ErrConflict)
+		applog.FromContext(ctx).Warnw("EXECUTE order in progress",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+			"spender", quote.Spender, "quoteId", quote.ID, "orderId", existingOrder.ID, "status", existingOrder.Status, "err", err)
+		return ExecuteResponse{}, true, err
+	case OrderStatusSigningTimeout, OrderStatusAwaitingTxHashTimeout, OrderStatusTxFailed, OrderStatusBroadcastFailed:
+		// 可恢复终态，但必须重新 quote，不能复用旧 quoteId
+		err := fmt.Errorf("%w: order already failed, re-quote required", ErrConflict)
+		applog.FromContext(ctx).Warnw("EXECUTE order failed state",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+			"spender", quote.Spender, "quoteId", quote.ID, "orderId", existingOrder.ID, "status", existingOrder.Status, "err", err)
+		return ExecuteResponse{}, true, err
+	case OrderStatusCompleted, OrderStatusTxConfirmed:
+		// 已完成，同一 quote 不能再次执行
+		err := fmt.Errorf("%w: order already completed", ErrConflict)
+		applog.FromContext(ctx).Warnw("EXECUTE order completed",
+			"provider", quote.Provider, "chainId", quote.ChainID, "pair", pair,
+			"amountIn", quote.AmountIn, "wallet", walletAddress, "walletType", walletType,
+			"spender", quote.Spender, "quoteId", quote.ID, "orderId", existingOrder.ID, "status", existingOrder.Status, "err", err)
+		return ExecuteResponse{}, true, err
+	}
+	return ExecuteResponse{}, false, nil
+}
+
+// executeNewOrder 构造 swap 交易并创建新订单。
+// CreateOrder 内部做并发安全的幂等插入（INSERT ON CONFLICT DO NOTHING）；
+// created=false 说明另一个并发请求已先插入，直接返回冲突。
+func (s *Service) executeNewOrder(ctx context.Context, provider QuoteProvider, quote NormalizedQuote, walletAddress string, walletType WalletType) (ExecuteResponse, error) {
+	pair := quoteTokenPair(quote.FromToken, quote.ToToken)
 	swapTx, err := provider.BuildSwapTx(quote, walletAddress)
 	if err != nil {
 		applog.FromContext(ctx).Errorw("EXECUTE build swap tx failed",
@@ -519,8 +557,6 @@ func (s *Service) Execute(ctx context.Context, quoteID, walletAddress string, wa
 			"spender", quote.Spender, "quoteId", quote.ID, "err", err)
 		return ExecuteResponse{}, err
 	}
-	// CreateOrder 内部做并发安全的幂等插入（INSERT ON CONFLICT DO NOTHING）；
-	// created=false 说明另一个并发请求已先插入，直接返回冲突。
 	order, created, err := s.repo.CreateOrder(StoredOrder{
 		QuoteID:       quote.ID,
 		UserID:        quote.QuoteInput.UserID,
@@ -652,7 +688,7 @@ func (s *Service) Status(ctx context.Context, orderID string) (StatusResponse, e
 	}, nil
 }
 
-// ── 内部辅助方法 ───────────────────────────────────────────────────────────────
+// 内部辅助方法
 
 // quoteProviders resolves the provider set for one quote request.
 func (s *Service) quoteProviders(input QuoteInput) ([]QuoteProvider, error) {

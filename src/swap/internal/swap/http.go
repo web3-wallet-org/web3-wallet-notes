@@ -154,7 +154,7 @@ func (h *HTTPHandler) handleHealthz(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// ── HTTP 工具函数 ──────────────────────────────────────────────────────────────
+// HTTP 工具函数
 
 // bindJSON 解析请求体为目标结构体。
 // DisallowUnknownFields 确保客户端传了不认识的字段时直接报错，
