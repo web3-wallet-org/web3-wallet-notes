@@ -11,8 +11,8 @@ import (
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 
-	"github.com/web3-wallet-org/web3-wallet/src/swap/internal/swap"
-	applog "github.com/web3-wallet-org/web3-wallet/src/swap/pkg/log"
+	"github.com/web3-wallet-org/web3-wallet-notes/src/swap/internal/swap"
+	applog "github.com/web3-wallet-org/web3-wallet-notes/src/swap/pkg/log"
 )
 
 // AppConfig 是 config.yaml 的完整映射。

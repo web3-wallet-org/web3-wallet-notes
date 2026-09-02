@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	applog "github.com/web3-wallet-org/web3-wallet/src/swap/pkg/log"
+	applog "github.com/web3-wallet-org/web3-wallet-notes/src/swap/pkg/log"
 )
 
 // Service 是业务逻辑核心，所有 swap 流程都经过这里。

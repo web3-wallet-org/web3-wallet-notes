@@ -44,11 +44,11 @@
 
 ## 与 Web3 Wallet Labs 的关系
 
-- **Web3 Wallet Notes**：知识入口和最终结论。
-- **Web3 Wallet Labs**：钱包技术的小型代码实验，例如 HD Wallet、Gas、交易、扫描和风控。
+- **[Web3 Wallet Notes](https://github.com/web3-wallet-org/web3-wallet-notes)**：知识入口和最终结论。
+- **[Web3 Wallet Labs](https://github.com/web3-wallet-org/web3-wallet-labs)**：钱包技术的小型代码实验，例如 HD Wallet、Gas、交易、扫描和风控。
 - 本仓库的 `src/swap/` 暂时保留，因为它与现有 Swap 系统设计文档联系紧密；后续是否迁入 Labs，以避免重复为判断标准。
 
-## 名称迁移
+## 仓库信息
 
-建议 GitHub 仓库最终命名为 `web3-wallet-notes`。当前 Go module 仍使用
-`github.com/web3-wallet-org/web3-wallet`，在远程仓库正式重命名之前保持不变，避免本地引用失效。
+- GitHub：[`web3-wallet-org/web3-wallet-notes`](https://github.com/web3-wallet-org/web3-wallet-notes)
+- Go module：`github.com/web3-wallet-org/web3-wallet-notes`
